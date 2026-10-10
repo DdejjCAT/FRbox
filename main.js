@@ -1612,8 +1612,9 @@ app.get("/uuid/image.png", (req, res) => {
   res.json({ jbg_id: crypto.randomUUID() });
 });
 
-app.use(express.static(SITE_ROOT, { index: "index.html" }));
+// Панель (public/) на корне; сайт-оболочка контроллера (SITE_ROOT) — отдельно.
 app.use(express.static("public"));
+app.use(express.static(SITE_ROOT, { index: "index.html" }));
 
 // ======================= LEGACY /room ENDPOINT ===================
 // QA-совместимо: GET /room ВСЕГДА отвечает healthcheck {create, server},
