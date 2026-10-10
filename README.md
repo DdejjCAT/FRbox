@@ -10,7 +10,7 @@
 ---
 
 Основной сервер: jack.nevpn2.fenst4r.live
-Освновной контроллер: jpp.nevpn2.fenst4r.live
+Освновной контроллер: https://jpp.nevpn2.fenst4r.live
 ## Возможности
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
