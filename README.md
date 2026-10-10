@@ -25,7 +25,7 @@ https://jpp.nevpn2.fenst4r.live
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
 - WebSocket-мост **Ecast ↔ Blobcast** (старые пакеты через Socket.IO v1).
-- Проброс запросов к официальным серверам Jackbox прямо из Node.js:
+- Проброс запросов к официальным серверам Jackbox:
   `/arc/`, `/arcade/` → `api.jackboxgames.com`, `/binjpipe/` → `binjpipe.jackboxgames.com`,
   `/mixpanel/` → `api-js.mixpanel.com`.
 - Эндпоинт `GET /uuid/image.png` → `{ "jbg_id": "<uuid>" }` (требование клиента).
