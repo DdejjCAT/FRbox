@@ -911,6 +911,13 @@ const BINJPIPE_UPSTREAM = "https://binjpipe.jackboxgames.com";
 const MIXPANEL_UPSTREAM = "https://api-js.mixpanel.com";
 const SITE_ROOT = CONFIG.siteRoot || process.env.SITE_ROOT || "/var/www/jacksiteNEW";
 
+// Хост панели — основной сервер (CONFIG.host, jack.*); остальные хосты (jpp.*) — сайт-оболочка контроллера.
+function isPanelHost(req) {
+  const h = String(req.headers.host || "").toLowerCase().replace(/:\d+$/, "");
+  const mainHost = String(accessibleHost || "").toLowerCase();
+  return h === mainHost || h === "localhost" || h.startsWith("127.") || h === "0.0.0.0";
+}
+
 function proxyPreflight(req, res, opts = {}) {
   const origin = opts.echoOrigin ? (req.headers.origin || "*") : "*";
   res.setHeader("Access-Control-Allow-Origin", origin);
@@ -1612,9 +1619,13 @@ app.get("/uuid/image.png", (req, res) => {
   res.json({ jbg_id: crypto.randomUUID() });
 });
 
-// Панель (public/) на корне; сайт-оболочка контроллера (SITE_ROOT) — отдельно.
-app.use(express.static("public"));
-app.use(express.static(SITE_ROOT, { index: "index.html" }));
+// Панель (public/) — на корне основного сервера; на других хостах (jpp.*) — сайт-оболочка контроллера (SITE_ROOT).
+app.use((req, res, next) => {
+  const panelFirst = isPanelHost(req);
+  const first = panelFirst ? express.static("public") : express.static(SITE_ROOT, { index: "index.html" });
+  const second = panelFirst ? express.static(SITE_ROOT, { index: "index.html" }) : express.static("public");
+  first(req, res, (err) => (err ? next(err) : second(req, res, next)));
+});
 
 // ======================= LEGACY /room ENDPOINT ===================
 // QA-совместимо: GET /room ВСЕГДА отвечает healthcheck {create, server},
@@ -1855,7 +1866,7 @@ app.use(async (req, res) => {
 
   // SPA-фолбэк: навигационные запросы к сайту отдаём из index.html (аналог nginx try_files)
   if ((req.method === "GET" || req.method === "HEAD") && req.accepts("html")) {
-    const indexPath = SITE_ROOT + "/index.html";
+    const indexPath = isPanelHost(req) ? "public/index.html" : SITE_ROOT + "/index.html";
     if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
   }
   
