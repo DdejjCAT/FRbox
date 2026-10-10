@@ -9,6 +9,8 @@
 > Сайт возьмите из https://github.com/DdejjCAT/jackbox.tv или https://github.com/wheatleyinspace/jackbox.tv.dump (или сами спарсите)
 ---
 
+Основной сервер: jack.nevpn2.fenst4r.live
+Освновной контроллер: jpp.nevpn2.fenst4r.live
 ## Возможности
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
