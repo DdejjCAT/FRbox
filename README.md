@@ -9,8 +9,18 @@
 > Сайт возьмите из https://github.com/DdejjCAT/jackbox.tv или https://github.com/wheatleyinspace/jackbox.tv.dump (или сами спарсите)
 ---
 
-Основной сервер: jack.nevpn2.fenst4r.live
-Освновной контроллер: https://jpp.nevpn2.fenst4r.live
+Основной сервер: 
+jack.nevpn2.fenst4r.live
+
+Освновной контроллер:
+https://jpp.nevpn2.fenst4r.live
+
+Для указывания кастомных серверов в играх Jackbox используйте параметр запуска:
+-jbg.config serverUrl=сервер
+
+В Trivia Murder Party 3 нужно изменить сервер через HxD
+ https://mh-nexus.de/en/hxd/
+
 ## Возможности
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
