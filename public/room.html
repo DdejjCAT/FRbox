@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>FRbox — Комната</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <div>
+        <button class="ghost" style="width:auto" onclick="location.href='dashboard.html'">← Назад</button>
+        <h1 style="display:inline-block; margin-left:16px;">Комната: <span id="roomCode"></span></h1>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Настройки</h2>
+      <div class="row">
+        <input type="number" id="maxPlayers" placeholder="Макс. игроков" min="1" max="1000">
+        <input type="number" id="minPlayers" placeholder="Мин. игроков" min="1">
+      </div>
+      <label style="display:block; margin:10px 0;">
+        <input type="checkbox" id="locked" style="width:auto; margin-right:6px;">
+        Закрытая комната (locked)
+      </label>
+      <label style="display:block; margin:10px 0;">
+        <input type="checkbox" id="audienceEnabled" style="width:auto; margin-right:6px;">
+        Аудитория включена
+      </label>
+      <button onclick="saveSettings()">Сохранить</button>
+      <div id="settingsMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Фейковые игроки</h2>
+      <div class="row">
+        <input type="text" id="fakeName" placeholder="Имя (опционально)">
+        <input type="number" id="fakeCount" placeholder="Кол-во" value="1" min="1" max="50">
+      </div>
+      <button onclick="addFake()">Добавить</button>
+      <div id="fakeMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Информация</h2>
+      <div id="roomInfo">Загрузка...</div>
+    </div>
+  </div>
+
+<script>
+const API = location.origin;
+const token = localStorage.getItem("frbox_token");
+if (!token) location.href = "index.html";
+
+const code = new URLSearchParams(location.search).get("code")?.toUpperCase();
+if (!code) location.href = "dashboard.html";
+document.getElementById("roomCode").textContent = code;
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token, ...(opts.headers || {}) }
+  });
+  return res.json();
+}
+
+async function loadInfo() {
+  // Используем admin API с internal token (нужно прокинуть через backend)
+  // Либо сделаем отдельный эндпоинт для владельца
+  const data = await api(`/api/v2/rooms/${code}/info`);
+  const info = document.getElementById("roomInfo");
+  if (!data.ok) { info.innerHTML = "<p class='error'>Комната не найдена</p>"; return; }
+  const r = data.body;
+  document.getElementById("maxPlayers").value = r.maxPlayers;
+  document.getElementById("minPlayers").value = r.minPlayers;
+  document.getElementById("locked").checked = r.locked;
+  document.getElementById("audienceEnabled").checked = r.audienceEnabled;
+
+  info.innerHTML = `
+    <p><b>App:</b> ${r.appTag} (${r.appId})</p>
+    <p><b>Игроков:</b> ${r.players} / ${r.maxPlayers}</p>
+    <p><b>Host:</b> ${r.host ? '🟢 online' : '🔴 offline'}</p>
+    <p><b>Создана:</b> ${new Date(r.created).toLocaleString()}</p>
+  `;
+}
+
+async function saveSettings() {
+  const msg = document.getElementById("settingsMsg");
+  // Используем admin endpoint через прокси
+  const data = await api(`/api/v2/rooms/${code}/settings`, {
+    method: "POST",
+    body: JSON.stringify({
+      maxPlayers: parseInt(document.getElementById("maxPlayers").value),
+      minPlayers: parseInt(document.getElementById("minPlayers").value),
+      locked: document.getElementById("locked").checked
+    })
+  });
+  msg.className = data.ok ? "success" : "error";
+  msg.textContent = data.ok ? "Сохранено" : (data.error || "ошибка");
+}
+
+async function addFake() {
+  const msg = document.getElementById("fakeMsg");
+  const data = await api(`/api/v2/rooms/${code}/fake-player`, {
+    method: "POST",
+    body: JSON.stringify({
+      name: document.getElementById("fakeName").value.trim() || undefined,
+      count: parseInt(document.getElementById("fakeCount").value) || 1
+    })
+  });
+  msg.className = data.ok ? "success" : "error";
+  msg.textContent = data.ok ? `Добавлено: ${data.added?.length}` : data.error;
+  loadInfo();
+}
+
+loadInfo();
+</script>
+</body>
+</html>

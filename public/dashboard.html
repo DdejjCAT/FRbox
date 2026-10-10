@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>FRbox — Панель</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <h1>🎮 Мои комнаты</h1>
+      <div>
+        <span id="userLabel"></span>
+        <button class="ghost" style="width:auto; margin-left:10px;" onclick="logout()">Выйти</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Создать комнату с кастомным кодом</h2>
+      <form id="createForm">
+        <div class="row">
+          <input type="text" id="roomCode" placeholder="Код комнаты (любой, напр. MYGAME)" required maxlength="32">
+          <input type="text" id="appTag" placeholder="appTag (напр. drawing)" required>
+        </div>
+        <div class="row">
+          <input type="text" id="appId" placeholder="appId (напр. 12345)" required>
+          <input type="number" id="maxPlayers" placeholder="Макс. игроков" value="100" min="1">
+        </div>
+        <label style="display:block; margin:10px 0;">
+          <input type="checkbox" id="audienceEnabled" style="width:auto; margin-right:6px;">
+          Включить аудиторию
+        </label>
+        <button type="submit">Создать комнату</button>
+        <div id="createMsg"></div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Список комнат</h2>
+      <div id="roomsList">Загрузка...</div>
+    </div>
+  </div>
+
+<script>
+const API = location.origin;
+const token = localStorage.getItem("frbox_token");
+if (!token) location.href = "index.html";
+
+document.getElementById("userLabel").textContent = "👤 " + localStorage.getItem("frbox_user");
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token, ...(opts.headers || {}) }
+  });
+  const data = await res.json();
+  if (res.status === 401) { logout(); throw new Error("session expired"); }
+  return data;
+}
+
+function logout() {
+  localStorage.removeItem("frbox_token");
+  localStorage.removeItem("frbox_user");
+  location.href = "index.html";
+}
+
+async function loadRooms() {
+  const list = document.getElementById("roomsList");
+  try {
+    const data = await api("/api/v2/my-rooms");
+    if (!data.ok || !data.body.length) {
+      list.innerHTML = "<p style='color:#888'>Пока нет комнат. Создай первую ↑</p>";
+      return;
+    }
+    list.innerHTML = data.body.map(r => `
+      <div class="room-item">
+        <div>
+          <div class="code">${r.code}
+            <span class="badge ${r.host ? 'online' : 'offline'}">${r.host ? 'host online' : 'offline'}</span>
+            ${r.locked ? '<span class="badge">🔒</span>' : ''}
+          </div>
+          <div class="meta">${r.appTag} • ${r.players}/${r.maxPlayers} игроков</div>
+        </div>
+        <div>
+          <button class="ghost" style="width:auto" onclick="openRoom('${r.code}')">Управлять</button>
+          <button class="danger" style="width:auto" onclick="deleteRoom('${r.code}')">Удалить</button>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    list.innerHTML = "<p class='error'>Ошибка: " + e.message + "</p>";
+  }
+}
+
+document.getElementById("createForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById("createMsg");
+  msg.className = ""; msg.textContent = "";
+  try {
+    const data = await api("/api/v2/rooms/custom", {
+      method: "POST",
+      body: JSON.stringify({
+        roomCode: document.getElementById("roomCode").value.trim(),
+        appTag: document.getElementById("appTag").value.trim(),
+        appId: document.getElementById("appId").value.trim(),
+        maxPlayers: parseInt(document.getElementById("maxPlayers").value) || 100,
+        audienceEnabled: document.getElementById("audienceEnabled").checked
+      })
+    });
+    if (!data.ok) throw new Error(data.error);
+    msg.className = "success";
+    msg.textContent = `Комната ${data.body.code} создана! Хост-токен: ${data.body.token}`;
+    document.getElementById("createForm").reset();
+    loadRooms();
+  } catch (err) {
+    msg.className = "error";
+    msg.textContent = err.message;
+  }
+};
+
+async function deleteRoom(code) {
+  if (!confirm(`Удалить комнату ${code}?`)) return;
+  await api(`/api/v2/rooms/${code}`, { method: "DELETE" });
+  loadRooms();
+}
+
+function openRoom(code) {
+  location.href = `room.html?code=${code}`;
+}
+
+loadRooms();
+</script>
+</body>
+</html>

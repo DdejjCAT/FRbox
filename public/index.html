@@ -1,0 +1,863 @@
+<!--Клюква где исходники? =)-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FRbox (by @error_kill)</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a10;--surface:#12121c;--surface2:#1a1a28;--surface3:#22222e;
+  --border:#2a2a3e;--border-hover:#3a3a4e;
+  --text:#e2e2ee;--text2:#8888a8;--text3:#55556a;
+  --accent:#6c5ce7;--accent-hover:#5a4bd6;--accent-soft:rgba(108,92,231,.15);
+  --danger:#e74c3c;--danger-hover:#c0392b;--danger-soft:rgba(231,76,60,.15);
+  --success:#2ecc71;--success-soft:rgba(46,204,113,.15);
+  --warning:#f39c12;--warning-soft:rgba(243,156,18,.15);
+  --info:#3498db;--info-soft:rgba(52,152,219,.15);
+  --radius:12px;--radius-sm:8px;--radius-lg:16px;
+  --shadow:0 4px 24px rgba(0,0,0,.3);
+  --transition:.2s cubic-bezier(.4,0,.2,1);
+}
+body{
+  font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5;
+  background-image:
+    radial-gradient(circle at 10% 20%,rgba(108,92,231,.08) 0%,transparent 50%),
+    radial-gradient(circle at 90% 80%,rgba(46,204,113,.05) 0%,transparent 50%);
+}
+body.light{
+  --bg:#f5f5fa;--surface:#fff;--surface2:#f0f0f8;--surface3:#e8e8f0;
+  --border:#e0e0e8;--border-hover:#d0d0d8;
+  --text:#1a1a2e;--text2:#666678;--text3:#999;
+  --shadow:0 4px 24px rgba(0,0,0,.08);
+}
+a{color:var(--accent);text-decoration:none;transition:var(--transition)}
+a:hover{color:var(--accent-hover)}
+
+.app{display:flex;min-height:100vh}
+.sidebar{
+  width:260px;background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+  transition:var(--transition);z-index:100;
+}
+.sidebar-header{padding:24px 20px;border-bottom:1px solid var(--border)}
+.sidebar-header h1{font-size:22px;display:flex;align-items:center;gap:10px}
+.sidebar-header .subtitle{color:var(--text2);font-size:12px;margin-top:4px}
+.sidebar-nav{flex:1;padding:16px 12px;overflow-y:auto}
+.nav-item{
+  display:flex;align-items:center;gap:12px;padding:12px 14px;
+  border-radius:var(--radius-sm);color:var(--text2);cursor:pointer;
+  transition:var(--transition);margin-bottom:4px;font-weight:500;font-size:14px;
+}
+.nav-item:hover{background:var(--surface2);color:var(--text)}
+.nav-item.active{background:var(--accent-soft);color:var(--accent)}
+.nav-item .icon{font-size:18px;width:24px;text-align:center}
+.nav-item .badge{
+  margin-left:auto;background:var(--surface3);color:var(--text2);
+  padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;
+}
+.sidebar-footer{padding:16px 12px;border-top:1px solid var(--border)}
+
+.main{flex:1;padding:24px 32px;max-width:1400px}
+.page{display:none;animation:fadeIn .3s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:16px}
+.topbar h1{font-size:28px;font-weight:700}
+.topbar-actions{display:flex;gap:10px;align-items:center}
+.user-chip{
+  display:flex;align-items:center;gap:10px;background:var(--surface);
+  border:1px solid var(--border);padding:8px 16px;border-radius:20px;font-size:13px;
+}
+.avatar{
+  width:28px;height:28px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),#9c88ff);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;
+}
+
+.card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:24px;margin-bottom:20px;transition:var(--transition);
+}
+.card:hover{border-color:var(--border-hover)}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.card-title{font-size:16px;font-weight:600;display:flex;align-items:center;gap:10px}
+.card-subtitle{color:var(--text2);font-size:13px;margin-top:2px}
+.card-desc{color:var(--text2);font-size:13px;line-height:1.6;margin-bottom:16px;padding:12px 16px;background:var(--surface2);border-radius:var(--radius-sm);border-left:3px solid var(--accent)}
+
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:20px;position:relative;overflow:hidden;
+}
+.stat-card::before{
+  content:'';position:absolute;top:0;right:0;width:80px;height:80px;
+  border-radius:50%;opacity:.1;transform:translate(30%,-30%);
+}
+.stat-card.accent::before{background:var(--accent)}
+.stat-card.success::before{background:var(--success)}
+.stat-card.warning::before{background:var(--warning)}
+.stat-card.danger::before{background:var(--danger)}
+.stat-card.info::before{background:var(--info)}
+.stat-label{color:var(--text2);font-size:12px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.stat-value{font-size:32px;font-weight:700;margin-top:6px;line-height:1}
+.stat-change{font-size:12px;color:var(--text2);margin-top:8px;display:flex;align-items:center;gap:4px}
+
+input[type="text"],input[type="password"],input[type="number"],select,textarea{
+  width:100%;padding:11px 14px;border-radius:var(--radius-sm);
+  border:1px solid var(--border);background:var(--bg);color:var(--text);
+  font-size:14px;transition:var(--transition);font-family:inherit;
+}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input::placeholder{color:var(--text3)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-group{margin-bottom:14px}
+.form-label{display:block;color:var(--text2);font-size:12px;margin-bottom:6px;font-weight:500}
+
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:10px 18px;border:none;border-radius:var(--radius-sm);font-size:14px;
+  font-weight:600;cursor:pointer;transition:var(--transition);color:#fff;
+  font-family:inherit;white-space:nowrap;
+}
+.btn:active{transform:scale(.97)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--accent)}
+.btn-primary:hover:not(:disabled){background:var(--accent-hover);box-shadow:0 4px 12px var(--accent-soft)}
+.btn-danger{background:var(--danger)}
+.btn-danger:hover:not(:disabled){background:var(--danger-hover)}
+.btn-success{background:var(--success)}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-ghost:hover{background:var(--surface2);border-color:var(--border-hover)}
+.btn-full{width:100%}
+.btn-sm{padding:6px 12px;font-size:12px}
+.btn-lg{padding:14px 24px;font-size:15px}
+
+.tabs{display:flex;gap:4px;background:var(--surface);border-radius:var(--radius);padding:4px;border:1px solid var(--border);margin-bottom:20px}
+.tab{flex:1;text-align:center;padding:10px 16px;border-radius:var(--radius-sm);cursor:pointer;font-weight:500;font-size:14px;color:var(--text2);transition:var(--transition)}
+.tab:hover{color:var(--text)}
+.tab.active{background:var(--accent);color:#fff}
+
+.room-list{display:flex;flex-direction:column;gap:10px}
+.room-item{
+  display:grid;grid-template-columns:1fr auto;gap:16px;padding:16px 20px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  transition:var(--transition);align-items:center;cursor:pointer;
+}
+.room-item:hover{border-color:var(--accent);transform:translateX(2px)}
+.room-code{font-family:'SF Mono','Fira Code',monospace;font-size:20px;font-weight:700;color:var(--accent);letter-spacing:2px}
+.room-info{display:flex;flex-direction:column;gap:6px;flex:1}
+.room-meta{display:flex;gap:12px;font-size:12px;color:var(--text2);flex-wrap:wrap}
+.room-meta-item{display:flex;align-items:center;gap:4px}
+.room-actions{display:flex;gap:8px}
+
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.badge-online{background:var(--success-soft);color:var(--success)}
+.badge-offline{background:var(--danger-soft);color:var(--danger)}
+.badge-waiting{background:var(--warning-soft);color:var(--warning)}
+.badge-locked{background:var(--surface3);color:var(--text2)}
+.badge-banned{background:var(--danger-soft);color:var(--danger)}
+
+.empty{text-align:center;padding:60px 20px;color:var(--text2)}
+.empty-icon{font-size:56px;margin-bottom:12px;opacity:.6}
+.empty-title{font-size:16px;color:var(--text);margin-bottom:6px;font-weight:600}
+.empty-desc{font-size:13px}
+
+.toasts{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:360px}
+.toast{
+  padding:14px 18px;border-radius:var(--radius);background:var(--surface);
+  border:1px solid var(--border);box-shadow:var(--shadow);
+  display:flex;gap:12px;align-items:flex-start;animation:slideIn .3s ease;
+}
+.toast.success{border-left:3px solid var(--success)}
+.toast.error{border-left:3px solid var(--danger)}
+.toast.warning{border-left:3px solid var(--warning)}
+.toast.info{border-left:3px solid var(--info)}
+.toast-icon{font-size:18px;flex-shrink:0}
+.toast-content{flex:1;font-size:13px}
+.toast-title{font-weight:600;margin-bottom:2px}
+.toast-close{cursor:pointer;color:var(--text2);padding:0 4px}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:none;opacity:1}}
+
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;
+  align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(4px);
+}
+.modal-overlay.active{display:flex}
+.modal{
+  background:var(--surface);border-radius:var(--radius-lg);padding:28px;
+  max-width:520px;width:90%;border:1px solid var(--border);box-shadow:var(--shadow);
+  animation:modalIn .3s ease;
+}
+@keyframes modalIn{from{transform:scale(.95);opacity:0}to{transform:none;opacity:1}}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.modal-title{font-size:20px;font-weight:700}
+.modal-close{cursor:pointer;color:var(--text2);font-size:24px;padding:0 4px}
+.modal-footer{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}
+
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.auth-container{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.auth-card{max-width:420px;width:100%}
+.auth-logo{text-align:center;margin-bottom:32px}
+.auth-logo h1{font-size:32px;margin-bottom:8px}
+
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:12px;font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+.chip.success{background:var(--success-soft);color:var(--success);border-color:transparent}
+.chip.danger{background:var(--danger-soft);color:var(--danger);border-color:transparent}
+.chip.warning{background:var(--warning-soft);color:var(--warning);border-color:transparent}
+
+.checkbox{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px}
+.checkbox input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+
+.alert{padding:14px 18px;border-radius:var(--radius-sm);margin-bottom:16px;display:flex;gap:12px;align-items:flex-start}
+.alert-warning{background:var(--warning-soft);border:1px solid rgba(243,156,18,.3);color:#f39c12}
+.alert-danger{background:var(--danger-soft);border:1px solid rgba(231,76,60,.3);color:var(--danger)}
+.alert-info{background:var(--info-soft);border:1px solid rgba(52,152,219,.3);color:var(--info)}
+.alert-icon{font-size:18px;flex-shrink:0}
+
+.sec-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+.sec-table th,.sec-table td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)}
+.sec-table th{color:var(--text2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+.sec-table tr:hover{background:var(--surface2)}
+.sec-ip{font-family:'SF Mono','Fira Code',monospace;font-size:13px;color:var(--accent)}
+.sec-timer{color:var(--danger);font-weight:600;font-variant-numeric:tabular-nums}
+
+.xray-server{
+  padding:16px 20px;background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--radius-sm);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;
+}
+.xray-server.active{border-color:var(--success);background:var(--success-soft)}
+.xray-name{font-weight:600;font-size:15px}
+.xray-meta{color:var(--text2);font-size:12px;margin-top:4px}
+
+@media(max-width:768px){
+  .sidebar{position:fixed;z-index:100;transform:translateX(-100%)}
+  .sidebar.open{transform:none}
+  .main{padding:16px}
+  .form-row{grid-template-columns:1fr}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<!-- AUTH -->
+<div id="auth-screen" class="auth-container">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <h1>🎮 FRbox</h1>
+      <p style="color:var(--text2)">Панель управления комнатами</p>
+    </div>
+    <div class="card">
+      <div class="tabs" id="auth-tabs" style="margin-bottom:24px">
+        <div class="tab active" data-tab="login">Вход</div>
+        <div class="tab" data-tab="register">Регистрация</div>
+      </div>
+      <form id="auth-form">
+        <div class="form-group">
+          <label class="form-label">Логин</label>
+          <input type="text" id="auth-username" placeholder="Ваш логин" autocomplete="username" required minlength="3">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Пароль</label>
+          <input type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" required minlength="4">
+        </div>
+        <button type="submit" class="btn btn-primary btn-full btn-lg" id="auth-submit">Войти</button>
+      </form>
+      <div class="alert alert-warning" style="margin-top:16px">
+        <span class="alert-icon">⚠️</span>
+        <div style="font-size:12px;line-height:1.4"><strong>Внимание:</strong> Используйте уникальный пароль.<br>
+Все логины и пароли хранятся в ОТКРЫТОМ виде!</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="app" style="display:none">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>🎮 FRbox</h1>
+      <div class="subtitle">Полу-форк старого klucva и FRbox гы)<br>By @error_kill</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-page="dashboard"><span class="icon">📊</span>Панель управления</div>
+      <div class="nav-item" data-page="rooms"><span class="icon">🎮</span>Комнаты<span class="badge" id="nav-rooms-count">0</span></div>
+      <div class="nav-item" data-page="prepared"><span class="icon">📌</span>Кастомные коды<span class="badge" id="nav-prepared-count">0</span></div>
+      <div class="nav-item" data-page="security"><span class="icon">🛡️</span>Защита<span class="badge" id="nav-bans-count">0</span></div>
+      <div class="nav-item" data-page="xray"><span class="icon">🌐</span>Xray Proxy</div>
+      <div class="nav-item" data-page="account"><span class="icon">👤</span>Аккаунт</div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="nav-item" onclick="toggleTheme()"><span class="icon">🌓</span><span id="theme-label">Светлая тема</span></div>
+      <div class="nav-item" onclick="doLogout()" style="color:var(--danger)"><span class="icon">🚪</span>Выйти</div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- DASHBOARD -->
+    <div id="page-dashboard" class="page active">
+      <div class="topbar">
+        <div><h1>Панель управления</h1><div style="color:var(--text2);font-size:13px;margin-top:4px">Основные настройки</div></div>
+        <div class="topbar-actions">
+          <div class="user-chip"><div class="avatar" id="user-avatar"></div><span id="user-name"></span></div>
+          <button class="btn btn-ghost btn-sm" onclick="loadDashboard()">🔄</button>
+        </div>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card accent"><div class="stat-label">Комнаты</div><div class="stat-value" id="stat-rooms">0</div><div class="stat-change" id="stat-rooms-sub"></div></div>
+        <div class="stat-card success"><div class="stat-label">Игроки</div><div class="stat-value" id="stat-players">0</div><div class="stat-change">онлайн</div></div>
+        <div class="stat-card info"><div class="stat-label">Зрители</div><div class="stat-value" id="stat-audience">0</div><div class="stat-change">онлайн</div></div>
+        <div class="stat-card warning"><div class="stat-label">Ожидают</div><div class="stat-value" id="stat-prepared">0</div><div class="stat-change">подготовлено</div></div>
+        <div class="stat-card danger"><div class="stat-label">Забанено</div><div class="stat-value" id="stat-banned">0</div><div class="stat-change">IP адресов</div></div>
+        <div class="stat-card accent"><div class="stat-label">Uptime</div><div class="stat-value" id="stat-uptime" style="font-size:20px"></div><div class="stat-change">сервер работает</div></div>
+        <div class="stat-card success"><div class="stat-label">Память</div><div class="stat-value" id="stat-memory" style="font-size:20px"></div><div class="stat-change" id="stat-memory-sub">heap</div></div>
+        <div class="stat-card info"><div class="stat-label">Xray</div><div class="stat-value" id="stat-xray" style="font-size:20px"></div><div class="stat-change" id="stat-xray-sub">статус</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">⚡ Быстрые действия</div></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+          <button class="btn btn-primary btn-full" onclick="switchPage('prepared')">📌 Подготовить код</button>
+          <button class="btn btn-ghost btn-full" onclick="switchPage('rooms')">🎮 Мои комнаты</button>
+          <button class="btn btn-ghost btn-full" onclick="switchPage('security')">🛡 Защита</button>
+          <button class="btn btn-ghost btn-full" onclick="switchPage('xray')">🌐 Xray Proxy</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">🎮 Ваши активные комнаты</div><button class="btn btn-ghost btn-sm" onclick="switchPage('rooms')">Все →</button></div>
+        <div id="dash-active-rooms"></div>
+      </div>
+    </div>
+
+    <!-- ROOMS -->
+    <div id="page-rooms" class="page">
+      <div class="topbar"><h1>🎮 Мои комнаты</h1><button class="btn btn-primary" onclick="loadRooms()">🔄 Обновить</button></div>
+      <div class="card">
+        <div class="form-row" style="margin-bottom:16px">
+          <div class="search-box"><input type="text" id="rooms-search" placeholder="Поиск по коду или тегу..." oninput="filterRooms()"></div>
+          <select id="rooms-filter" onchange="filterRooms()">
+            <option value="all">Все комнаты</option>
+            <option value="online">С хостом онлайн</option>
+            <option value="locked">Закрытые</option>
+            <option value="audience">С аудиторией</option>
+          </select>
+        </div>
+        <div id="rooms-list"></div>
+      </div>
+    </div>
+
+    <!-- PREPARED -->
+    <div id="page-prepared" class="page">
+      <div class="topbar"><h1>📌 Кастомные коды</h1><button class="btn btn-primary" onclick="loadPrepared()">🔄 Обновить</button></div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">❓ Что это и зачем?</div></div>
+        <div class="card-desc">
+          <strong>Кастомные коды</strong> позволяют заранее зарезервировать красивый код комнаты (например <code>HERO</code> или <code>MEOW</code>).<br><br>
+          Когда Jackbox создаёт комнату, сервер смотрит на IP отправителя. Если с этого IP есть подготовленный код - он автоматически подставляется вместо случайного.<br><br>
+          <strong>Как использовать:</strong><br>
+          1. Введи желаемый код ниже<br>
+          2. Запусти Jackbox на этом же устройстве (или с того же IP)<br>
+          3. Игра автоматически получит твой код вместо случайного<br><br>
+          Код привязывается к IP. Если у тебя динамический IP - обнови привязку через кнопку «🔄 Обновить».<br>
+          А также напомню что оригинальная панель Jackbox принимает только символы A-Z 0-9 и максимум 4 символа.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">➕ Создать подготовку</div></div>
+        <form id="prepare-form">
+          <div class="form-group"><label class="form-label">Код комнаты</label><input type="text" id="prep-code" placeholder="MEOW" required maxlength="64" style="font-family:monospace;font-size:16px;text-transform:uppercase"></div>
+          <button type="submit" class="btn btn-primary">📌 Подготовить</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">⏳ Список</div><span class="chip" id="prepared-total">0 шт.</span></div>
+        <div id="prepared-list"></div>
+      </div>
+    </div>
+
+    <!-- SECURITY -->
+    <div id="page-security" class="page">
+      <div class="topbar"><h1>🛡 Защита</h1><button class="btn btn-primary" onclick="loadSecurity()">🔄 Обновить</button></div>
+
+      <div class="stats-grid">
+        <div class="stat-card danger"><div class="stat-label">Активные баны</div><div class="stat-value" id="sec-bans-count">0</div></div>
+        <div class="stat-card warning"><div class="stat-label">Брутфорс попытки</div><div class="stat-value" id="sec-brute-count">0</div></div>
+        <div class="stat-card info"><div class="stat-label">DDoS предупреждения</div><div class="stat-value" id="sec-ddos-count">0</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">🚫 Активные баны</div><span class="chip" id="sec-bans-total">0</span></div>
+        <div id="sec-bans-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">⚠️ Брутфорс попытки</div></div>
+        <div id="sec-brute-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">🌊 DDoS предупреждения</div></div>
+        <div id="sec-ddos-list"></div>
+      </div>
+    </div>
+
+    <!-- XRAY -->
+    <div id="page-xray" class="page">
+      <div class="topbar"><h1>🌐 Xray Proxy</h1><button class="btn btn-primary" onclick="loadXray()">🔄 Обновить</button></div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">❓ Что это?</div></div>
+        <div class="card-desc">
+          <strong>Xray Proxy</strong> используется для доступа к серверам Jackbox Games (<code>ecast.jackboxgames.com и др.</code>) когда прямой доступ заблокирован провайдером (например как Anti-DDOS от klucva).<br><br>
+          Все запросы к хранилищу контента (картинки, звуки, настройки игр) проходят через зашифрованный туннель VLESS+Reality (VPN крч).<br><br>
+          <strong>Переключение происходит автоматически</strong> когда текущий сервер перестаёт отвечать. Ручное переключение недоступно - система сама выбирает рабочий сервер.<br><br>
+          Зачем вообще это было реализовано? Я "баловался" с серверами klucva и получил на них бан, а также потому-что Роскомнадзор убил сеть поего пк и сервера, поэтому ВООБЩЕ ничего не работает без VPN(
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">📡 Статус</div></div>
+        <div id="xray-status"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔌 Доступные серверы</div></div>
+        <div id="xray-servers-list"></div>
+      </div>
+    </div>
+
+    <!-- ACCOUNT -->
+    <div id="page-account" class="page">
+      <div class="topbar"><h1>👤 Мой аккаунт</h1></div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">ℹ️ Информация</div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div><div style="color:var(--text2);font-size:12px">Логин</div><div style="font-size:16px;font-weight:600;margin-top:4px" id="acc-username"></div></div>
+          <div><div style="color:var(--text2);font-size:12px">Мой IP</div><div style="font-size:16px;font-weight:600;margin-top:4px" id="acc-ip">определяется...</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔐 Смена пароля</div></div>
+        <form id="password-form">
+          <div class="form-group"><label class="form-label">Текущий пароль</label><input type="password" id="old-password" required></div>
+          <div class="form-group"><label class="form-label">Новый пароль</label><input type="password" id="new-password" required minlength="4"></div>
+          <div class="form-group"><label class="form-label">Подтвердите пароль</label><input type="password" id="confirm-password" required minlength="4"></div>
+          <button type="submit" class="btn btn-primary">🔐 Сменить пароль</button>
+        </form>
+      </div>
+      <div class="card" style="border-color:var(--danger)">
+        <div class="card-header"><div class="card-title" style="color:var(--danger)">⚠️ Опасная зона</div></div>
+        <button class="btn btn-danger" onclick="doLogout()">🚪 Выйти из аккаунта</button>
+      </div>
+    </div>
+
+    <!-- ROOM DETAIL -->
+    <div id="page-room-detail" class="page">
+      <div class="topbar">
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-ghost btn-sm" onclick="switchPage('rooms')">← Назад</button>
+          <h1>🎮 <span id="detail-code" style="font-family:monospace;color:var(--accent)"></span></h1>
+        </div>
+      </div>
+      <div id="room-detail-content"></div>
+    </div>
+
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div class="modal-overlay" id="modal"><div class="modal"><div class="modal-header"><div class="modal-title" id="modal-title"></div><div class="modal-close" onclick="closeModal()">×</div></div><div id="modal-content"></div></div></div>
+
+<script>
+const API = location.origin;
+let state = { rooms:[], prepared:[], currentRoom:null, myIP:'' };
+
+const getToken = () => localStorage.getItem("frbox_token");
+const getUser = () => localStorage.getItem("frbox_user");
+const setAuth = (t,u) => { localStorage.setItem("frbox_token",t); localStorage.setItem("frbox_user",u); };
+const clearAuth = () => { localStorage.removeItem("frbox_token"); localStorage.removeItem("frbox_user"); };
+
+async function api(path, opts={}) {
+  const headers = {"Content-Type":"application/json",...(opts.headers||{})};
+  const token = getToken();
+  if (token) headers["Authorization"] = "Bearer "+token;
+  const res = await fetch(API+path, {...opts, headers});
+  if (res.status===401) { clearAuth(); showAuth(); throw new Error("Войди заново с правильным паролем!"); }
+  const ct = res.headers.get('content-type')||'';
+  if (ct.includes('text/plain')) { const text = await res.text(); throw new Error(text); }
+  return res.json();
+}
+
+function toast(title,message,type='info') {
+  const icons={success:'✅',error:'❌',warning:'⚠️',info:'ℹ️'};
+  const el=document.createElement('div');
+  el.className=`toast ${type}`;
+  el.innerHTML=`<div class="toast-icon">${icons[type]}</div><div class="toast-content"><div class="toast-title">${esc(title)}</div><div>${esc(message)}</div></div><div class="toast-close" onclick="this.parentElement.remove()">×</div>`;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(()=>el.remove(),5000);
+}
+
+function openModal(title,content){document.getElementById('modal-title').textContent=title;document.getElementById('modal-content').innerHTML=content;document.getElementById('modal').classList.add('active')}
+function closeModal(){document.getElementById('modal').classList.remove('active')}
+
+function showAuth(){document.getElementById('auth-screen').style.display='flex';document.getElementById('app').style.display='none'}
+function showApp(){document.getElementById('auth-screen').style.display='none';document.getElementById('app').style.display='flex';initApp()}
+
+function switchPage(name) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item[data-page]').forEach(n=>n.classList.remove('active'));
+  document.getElementById(`page-${name}`).classList.add('active');
+  document.querySelector(`.nav-item[data-page="${name}"]`)?.classList.add('active');
+  ({dashboard:loadDashboard,rooms:loadRooms,prepared:loadPrepared,security:loadSecurity,xray:loadXray,account:loadAccount})[name]?.();
+}
+
+async function initApp() {
+  const user=getUser();
+  document.getElementById('user-name').textContent=user;
+  document.getElementById('user-avatar').textContent=user.charAt(0).toUpperCase();
+  document.getElementById('acc-username').textContent=user;
+
+  try {
+    const r = await fetch('https://api.ipify.org?format=json');
+    const d = await r.json();
+    state.myIP = d.ip;
+    document.getElementById('acc-ip').textContent = d.ip;
+  } catch { document.getElementById('acc-ip').textContent = 'не определён'; }
+
+  document.querySelectorAll('.nav-item[data-page]').forEach(item=>{item.onclick=()=>switchPage(item.dataset.page)});
+  loadDashboard();
+}
+
+function toggleTheme(){
+  document.body.classList.toggle('light');
+  const isLight=document.body.classList.contains('light');
+  localStorage.setItem('theme',isLight?'light':'dark');
+  document.getElementById('theme-label').textContent=isLight?'Тёмная тема':'Светлая тема';
+}
+if(localStorage.getItem('theme')==='light'){document.body.classList.add('light');document.getElementById('theme-label').textContent='Тёмная тема'}
+
+// AUTH
+let authMode='login';
+document.querySelectorAll('#auth-tabs .tab').forEach(tab=>{
+  tab.onclick=()=>{
+    document.querySelectorAll('#auth-tabs .tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    authMode=tab.dataset.tab;
+    document.getElementById('auth-submit').textContent=authMode==='login'?'Войти':'Создать аккаунт';
+  };
+});
+document.getElementById('auth-form').onsubmit=async(e)=>{
+  e.preventDefault();
+  const username=document.getElementById('auth-username').value.trim();
+  const password=document.getElementById('auth-password').value;
+  const btn=document.getElementById('auth-submit');
+  btn.disabled=true;btn.innerHTML='<div class="spinner"></div>';
+  try{
+    const data=await api(`/auth/${authMode}`,{method:'POST',body:JSON.stringify({username,password})});
+    if(!data.ok) throw new Error(data.error);
+    setAuth(data.body.token,data.body.username);
+    toast('Успех', 'Добро пожаловать, ' + username + '!', 'success');
+    showApp();
+  }catch(err){toast('Ошибка',err.message,'error')}
+  finally{btn.disabled=false;btn.textContent=authMode==='login'?'Войти':'Создать аккаунт'}
+};
+function doLogout(){api('/auth/logout',{method:'POST'}).catch(()=>{});clearAuth();showAuth();toast('Выход','Сессия завершена','info')}
+
+// DASHBOARD
+async function loadDashboard(){
+  try{
+    const [statsData,roomsData,secData]=await Promise.all([
+      api('/admin/stats'),api('/api/v2/my-rooms'),api('/admin/security/status')
+    ]);
+    if(statsData.ok){
+      const s=statsData.body;
+      document.getElementById('stat-rooms').textContent=s.rooms;
+      document.getElementById('stat-rooms-sub').textContent=`${s.roomsWithHost} с хостом`;
+      document.getElementById('stat-players').textContent=s.players;
+      document.getElementById('stat-audience').textContent=s.audience;
+      document.getElementById('stat-prepared').textContent=s.prepared;
+      document.getElementById('stat-banned').textContent=s.banned;
+      document.getElementById('stat-uptime').textContent=formatUptime(s.uptime);
+      document.getElementById('stat-memory').textContent=`${s.memory.heapUsed}MB`;
+      document.getElementById('stat-memory-sub').textContent=`из ${s.memory.heapTotal}MB`;
+    }
+    document.getElementById('nav-rooms-count').textContent=roomsData.body?.active?.length||0;
+    document.getElementById('nav-prepared-count').textContent=roomsData.body?.prepared?.length||0;
+    document.getElementById('nav-bans-count').textContent=secData.body?.bans?.length||0;
+    try{
+      const xrayData=await api('/admin/xray/status');
+      if(xrayData.ok){
+        document.getElementById('stat-xray').textContent=xrayData.body.isRunning?'✅ Онлайн':'❌ Оффлайн';
+        document.getElementById('stat-xray-sub').textContent=xrayData.body.currentServer?.name||'не подключен';
+      }
+    }catch{}
+    const activeRooms=roomsData.body?.active||[];
+    const el=document.getElementById('dash-active-rooms');
+    if(!activeRooms.length){el.innerHTML=`<div class="empty"><div class="empty-icon">🎮</div><div class="empty-title">Нет активных комнат</div><div class="empty-desc">Комнаты появятся когда игра подключится</div></div>`}
+    else{el.innerHTML=activeRooms.slice(0,5).map(r=>renderRoomItem(r)).join('')}
+  }catch(err){toast('Ошибка',err.message,'error')}
+}
+
+// ROOMS
+async function loadRooms(){
+  try{const data=await api('/api/v2/my-rooms');if(!data.ok)throw new Error(data.error);state.rooms=data.body.active||[];filterRooms()}
+  catch(err){toast('Ошибка',err.message,'error')}
+}
+function filterRooms(){
+  const search=document.getElementById('rooms-search').value.toLowerCase();
+  const filter=document.getElementById('rooms-filter').value;
+  let filtered=state.rooms.filter(r=>{
+    if(search&&!r.code.toLowerCase().includes(search)&&!(r.appTag||'').toLowerCase().includes(search))return false;
+    if(filter==='online'&&!r.host)return false;
+    if(filter==='locked'&&!r.locked)return false;
+    if(filter==='audience'&&!r.audienceEnabled)return false;
+    return true;
+  });
+  const el=document.getElementById('rooms-list');
+  if(!filtered.length){el.innerHTML=`<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">Ничего не найдено</div></div>`;return}
+  el.innerHTML=`<div class="room-list">${filtered.map(renderRoomItem).join('')}</div>`;
+}
+function renderRoomItem(r){
+  const isOwned=r.isOwned!==false;
+  return `<div class="room-item" onclick="openRoomDetail('${esc(r.code)}')">
+    <div class="room-info"><div>
+      <span class="room-code">${esc(r.code)}</span>
+      ${r.host?'<span class="badge badge-online">🟢 online</span>':'<span class="badge badge-offline">🔴 offline</span>'}
+      ${r.locked?'<span class="badge badge-locked">🔒 locked</span>':''}
+      ${r.audienceEnabled?'<span class="badge" style="background:var(--info-soft);color:var(--info)">👁 audience</span>':''}
+      ${!isOwned?'<span class="badge" style="background:var(--warning-soft);color:var(--warning)">⚠ не твоя</span>':''}
+    </div><div class="room-meta">
+      <span class="room-meta-item">🎮 ${esc(r.appTag||'')}</span>
+      <span class="room-meta-item">👥 ${r.players}/${r.maxPlayers}</span>
+      <span class="room-meta-item">⏱ ${timeAgo(r.created)}</span>
+      ${r.owner?`<span class="room-meta-item">👤 ${esc(r.owner)}</span>`:''}
+    </div></div>
+    <div class="room-actions" onclick="event.stopPropagation()">
+      ${!isOwned?`<button class="btn btn-primary btn-sm" onclick="claimRoom('${esc(r.code)}')">✋ Забрать</button>`:''}
+      <button class="btn btn-danger btn-sm" onclick="deleteRoom('${esc(r.code)}')">🗑</button>
+    </div></div>`;
+}
+async function deleteRoom(code){if(!confirm(`Удалить комнату ${code}?`))return;try{const d=await api(`/api/v2/rooms/${encodeURIComponent(code)}`,{method:'DELETE'});if(!d.ok)throw new Error(d.error);toast('Удалено',`Комната ${code} удалена`,'success');loadRooms();loadDashboard()}catch(err){toast('Ошибка',err.message,'error')}}
+async function claimRoom(code){if(!confirm(`Забрать комнату ${code} себе?`))return;try{const d=await api(`/api/v2/rooms/${encodeURIComponent(code)}/claim`,{method:'POST'});if(!d.ok)throw new Error(d.error);toast('Успех',`Комната ${code} теперь твоя!`,'success');loadRooms();loadDashboard()}catch(err){toast('Ошибка',err.message,'error')}}
+
+// ROOM DETAIL
+async function openRoomDetail(code){
+  state.currentRoom=code;switchPage('room-detail');
+  document.getElementById('detail-code').textContent=code;
+  const el=document.getElementById('room-detail-content');
+  el.innerHTML='<div class="card" style="text-align:center;padding:40px"><div class="spinner"></div></div>';
+  try{
+    const data=await api(`/api/v2/rooms/${encodeURIComponent(code)}/info`);
+    if(!data.ok)throw new Error(data.error);
+    const r=data.body;
+    el.innerHTML=`
+      <div class="stats-grid">
+        <div class="stat-card accent"><div class="stat-label">Игроков</div><div class="stat-value">${r.players}/${r.maxPlayers}</div></div>
+        <div class="stat-card info"><div class="stat-label">Модераторов</div><div class="stat-value">${r.moderators||0}</div></div>
+        <div class="stat-card ${r.host?'success':'danger'}"><div class="stat-label">Хост</div><div class="stat-value" style="font-size:20px">${r.host?'🟢 Online':'🔴 Offline'}</div></div>
+        <div class="stat-card ${r.locked?'warning':'success'}"><div class="stat-label">Статус</div><div class="stat-value" style="font-size:20px">${r.locked?'🔒 Locked':'🔓 Open'}</div></div>
+      </div>
+      <div class="card"><div class="card-header"><div class="card-title">ℹ️ Информация</div></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
+          <div><div style="color:var(--text2);font-size:12px">App Tag</div><div style="font-weight:600;margin-top:4px">${esc(r.appTag||'')}</div></div>
+          <div><div style="color:var(--text2);font-size:12px">App ID</div><div style="font-weight:600;margin-top:4px;font-family:monospace;font-size:11px">${esc(r.appId||'')}</div></div>
+          <div><div style="color:var(--text2);font-size:12px">Создана</div><div style="font-weight:600;margin-top:4px">${new Date(r.created).toLocaleString('ru')}</div></div>
+          <div><div style="color:var(--text2);font-size:12px">Аудитория</div><div style="font-weight:600;margin-top:4px">${r.audienceEnabled?'✅ Включена':'❌ Выключена'}</div></div>
+        </div>
+      </div>
+      <div class="card"><div class="card-header"><div class="card-title">⚙️ Настройки</div></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Макс. игроков</label><input type="number" id="detail-max" value="${r.maxPlayers}" min="1" max="999"></div>
+          <div class="form-group"><label class="form-label">Мин. игроков</label><input type="number" id="detail-min" value="${r.minPlayers||0}" min="0" max="999"></div>
+        </div>
+        <label class="checkbox"><input type="checkbox" id="detail-locked" ${r.locked?'checked':''}> 🔒 Закрытая комната</label>
+        <label class="checkbox" style="margin-top:8px"><input type="checkbox" id="detail-audience" ${r.audienceEnabled?'checked':''}> 👁 Аудитория включена</label>
+        <button class="btn btn-primary" style="margin-top:12px" onclick="saveDetailSettings()">💾 Сохранить</button>
+      </div>
+      <div class="card" style="border-color:var(--danger)"><div class="card-header"><div class="card-title" style="color:var(--danger)">⚠️ Опасная зона</div></div>
+        <button class="btn btn-danger" onclick="deleteRoom('${esc(r.code)}');switchPage('rooms')">🗑 Удалить комнату</button>
+      </div>`;
+  }catch(err){el.innerHTML=`<div class="card"><div class="alert alert-danger"><span class="alert-icon">❌</span>${esc(err.message)}</div></div>`}
+}
+async function saveDetailSettings(){
+  try{
+    const d=await api(`/api/v2/rooms/${encodeURIComponent(state.currentRoom)}/settings`,{method:'POST',body:JSON.stringify({
+      maxPlayers:parseInt(document.getElementById('detail-max').value),minPlayers:parseInt(document.getElementById('detail-min').value),
+      locked:document.getElementById('detail-locked').checked,audienceEnabled:document.getElementById('detail-audience').checked
+    })});
+    if(!d.ok)throw new Error(d.error);toast('Сохранено','Настройки обновлены','success');openRoomDetail(state.currentRoom);
+  }catch(err){toast('Ошибка',err.message,'error')}
+}
+
+// PREPARED
+async function loadPrepared(){
+  try{
+    const data=await api('/api/v2/my-rooms');if(!data.ok)throw new Error(data.error);
+    state.prepared=data.body.prepared||[];
+    document.getElementById('prepared-total').textContent=`${state.prepared.length} шт.`;
+    const el=document.getElementById('prepared-list');
+    if(!state.prepared.length){el.innerHTML=`<div class="empty"><div class="empty-icon">📌</div><div class="empty-title">Нет подготовленных кодов</div><div class="empty-desc">Создай первый код выше ↑</div></div>`;return}
+    el.innerHTML=`<div class="room-list">${state.prepared.map(p=>`
+      <div class="room-item"><div class="room-info"><div>
+        <span class="room-code">${esc(p.code)}</span>
+        ${p.active?'<span class="badge badge-online">активна</span>':'<span class="badge badge-waiting">ожидание</span>'}
+      </div><div class="room-meta"><span class="room-meta-item">🌐 ${esc(p.ip)}</span><span class="room-meta-item">⏱ ${timeAgo(p.created)}</span></div></div>
+      <div class="room-actions">
+        <button class="btn btn-ghost btn-sm" onclick="changePreparedIP('${esc(p.ip)}','${esc(p.code)}')">🔄 IP</button>
+        ${p.active?`<button class="btn btn-ghost btn-sm" onclick="openRoomDetail('${esc(p.code)}')">Открыть</button>`:''}
+        <button class="btn btn-danger btn-sm" onclick="deletePrepared('${esc(p.ip)}')">🗑</button>
+      </div></div>`).join('')}</div>`;
+  }catch(err){toast('Ошибка',err.message,'error')}
+}
+document.getElementById('prepare-form').onsubmit=async(e)=>{
+  e.preventDefault();const code=document.getElementById('prep-code').value.trim().toUpperCase();
+  try{const d=await api('/api/v2/rooms/custom',{method:'POST',body:JSON.stringify({roomCode:code})});if(!d.ok)throw new Error(d.error);toast('Готово',`Код ${code} подготовлен`,'success');document.getElementById('prep-code').value='';loadPrepared();loadDashboard()}
+  catch(err){toast('Ошибка',err.message,'error')}
+};
+async function deletePrepared(ip){if(!confirm(`Удалить подготовку для ${ip}?`))return;try{await api(`/api/v2/rooms/custom/${encodeURIComponent(ip)}`,{method:'DELETE'});toast('Удалено','Подготовка удалена','success');loadPrepared();loadDashboard()}catch(err){toast('Ошибка',err.message,'error')}}
+
+function changePreparedIP(oldIp, code){
+  const currentIP = state.myIP || '';
+  openModal('Смена IP привязки', `
+    <div class="alert alert-info" style="margin-bottom:16px">
+      <span class="alert-icon">💡</span>
+      <div style="font-size:13px">Привяжи код к IP устройства, с которого будешь запускать Jackbox. Сервер подставит этот код автоматически при создании комнаты.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Текущий IP</label>
+      <input type="text" value="${esc(oldIp)}" disabled>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Новый IP</label>
+      <input type="text" id="new-ip-input" placeholder="192.168.1.1" value="${esc(currentIP)}">
+    </div>
+    <div style="margin-bottom:16px">
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('new-ip-input').value='${esc(currentIP)}'" ${!currentIP?'disabled':''}>
+        📍 Использовать мой текущий IP${currentIP ? ` (${esc(currentIP)})` : ''}
+      </button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+      <button class="btn btn-primary" onclick="submitIPChange('${esc(oldIp)}','${esc(code)}')">💾 Сохранить</button>
+    </div>
+  `);
+}
+
+async function submitIPChange(oldIp, code){
+  const newIp=document.getElementById('new-ip-input').value.trim();
+  if(!newIp) return toast('Ошибка','Введите IP адрес','warning');
+  if(newIp===oldIp) return toast('Инфо','IP не изменился','info');
+  try{
+    const d=await api('/api/v2/rooms/custom',{method:'PATCH',body:JSON.stringify({oldIp,newIp})});
+    if(!d.ok)throw new Error(d.error);
+    toast('Успех',`IP обновлён: ${newIp}`,'success');
+    closeModal();loadPrepared();
+  }catch(err){toast('Ошибка',err.message,'error')}
+}
+
+// SECURITY
+async function loadSecurity(){
+  try{
+    const data=await api('/admin/security/status');if(!data.ok)throw new Error(data.error);
+    const s=data.body;
+    document.getElementById('sec-bans-count').textContent=s.bans.length;
+    document.getElementById('sec-brute-count').textContent=s.bruteAttempts.length;
+    document.getElementById('sec-ddos-count').textContent=s.ddosWarnings.length;
+    document.getElementById('nav-bans-count').textContent=s.bans.length;
+    document.getElementById('sec-bans-total').textContent=`${s.bans.length} шт.`;
+    const c=s.config;
+    const bansEl=document.getElementById('sec-bans-list');
+    if(!s.bans.length){bansEl.innerHTML=`<div class="empty" style="padding:30px"><div class="empty-icon">🎉</div><div class="empty-title">Нет активных банов</div></div>`}
+    else{bansEl.innerHTML=`<table class="sec-table"><thead><tr><th>IP</th><th>Осталось</th><th>Истекает</th><th></th></tr></thead><tbody>${s.bans.map(b=>`
+      <tr><td class="sec-ip">${esc(b.ip)}</td><td class="sec-timer">${b.remaining} мин</td><td style="color:var(--text2);font-size:12px">${new Date(b.expiresAt).toLocaleTimeString('ru')}</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="unbanIP('${esc(b.ip)}')">✅ Разбан</button></td></tr>`).join('')}</tbody></table>`}
+    const bruteEl=document.getElementById('sec-brute-list');
+    if(!s.bruteAttempts.length){bruteEl.innerHTML=`<div class="empty" style="padding:30px"><div class="empty-icon">✅</div><div class="empty-title">Нет подозрительных попыток</div></div>`}
+    else{bruteEl.innerHTML=`<table class="sec-table"><thead><tr><th>IP</th><th>Неудачных</th><th>Лимит</th><th></th></tr></thead><tbody>${s.bruteAttempts.map(b=>`
+      <tr><td class="sec-ip">${esc(b.ip)}</td><td style="color:var(--warning);font-weight:600">${b.fails}</td><td style="color:var(--text2)">${b.max}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="manualBan('${esc(b.ip)}')">🚫 Бан</button></td></tr>`).join('')}</tbody></table>`}
+    const ddosEl=document.getElementById('sec-ddos-list');
+    if(!s.ddosWarnings.length){ddosEl.innerHTML=`<div class="empty" style="padding:30px"><div class="empty-icon">✅</div><div class="empty-title">Нет DDoS угроз</div></div>`}
+    else{ddosEl.innerHTML=`<table class="sec-table"><thead><tr><th>IP</th><th>Запросов</th><th>Лимит</th><th>Окно</th><th></th></tr></thead><tbody>${s.ddosWarnings.map(d=>`
+      <tr><td class="sec-ip">${esc(d.ip)}</td><td style="color:var(--danger);font-weight:600">${d.requests}</td><td style="color:var(--text2)">${d.max}</td><td style="color:var(--text2)">${d.window}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="manualBan('${esc(d.ip)}')">🚫 Бан</button></td></tr>`).join('')}</tbody></table>`}
+  }catch(err){toast('Ошибка',err.message,'error')}
+}
+document.getElementById('manual-ban-form').onsubmit=async(e)=>{
+  e.preventDefault();const ip=document.getElementById('manual-ban-ip').value.trim();
+  try{const d=await api('/admin/security/ban',{method:'POST',body:JSON.stringify({ip})});if(!d.ok)throw new Error(d.error);toast('Забанен',`${ip} забанен на 30 минут`,'success');document.getElementById('manual-ban-ip').value='';loadSecurity();loadDashboard()}
+  catch(err){toast('Ошибка',err.message,'error')}
+};
+function manualBan(ip){if(!confirm(`Забанить ${ip} на 30 минут?`))return;
+  api('/admin/security/ban',{method:'POST',body:JSON.stringify({ip})}).then(d=>{if(!d.ok)throw new Error(d.error);toast('Забанен',`${ip} забанен`,'success');loadSecurity();loadDashboard()}).catch(err=>toast('Ошибка',err.message,'error'))}
+async function unbanIP(ip){if(!confirm(`Разбанить ${ip}?`))return;
+  try{await api('/admin/security/unban',{method:'POST',body:JSON.stringify({ip})});toast('Разбанен',`${ip} разбанен`,'success');loadSecurity();loadDashboard()}
+  catch(err){toast('Ошибка',err.message,'error')}}
+
+// XRAY (только просмотр, без ручного переключения)
+async function loadXray(){
+  try{
+    const data=await api('/admin/xray/status');if(!data.ok)throw new Error(data.error);
+    const s=data.body;
+    document.getElementById('xray-status').innerHTML=`
+      <div class="stats-grid">
+        <div class="stat-card ${s.isRunning?'success':'danger'}"><div class="stat-label">Статус</div><div class="stat-value" style="font-size:20px">${s.isRunning?'🟢 Работает':'🔴 Остановлен'}</div></div>
+        <div class="stat-card accent"><div class="stat-label">Серверов</div><div class="stat-value">${s.totalServers}</div></div>
+      </div>
+      ${s.currentServer?`
+        <div style="padding:16px;background:var(--success-soft);border:1px solid rgba(46,204,113,.3);border-radius:var(--radius-sm);margin-top:12px">
+          <div style="color:var(--success);font-size:12px;font-weight:600;margin-bottom:4px">ТЕКУЩИЙ АКТИВНЫЙ СЕРВЕР</div>
+          <div style="font-size:18px;font-weight:700">${esc(s.currentServer.name)}</div>
+          <div style="color:var(--text2);font-size:13px;margin-top:4px">${esc(s.currentServer.type.toUpperCase())} • ${esc(s.currentServer.address)}:${s.currentServer.port}</div>
+        </div>`:`
+        <div class="alert alert-danger" style="margin-top:12px"><span class="alert-icon">❌</span><div>Нет активного сервера. Система пытается подключиться автоматически.</div></div>`}
+    `;
+    const listEl=document.getElementById('xray-servers-list');
+    if(!s.servers.length){listEl.innerHTML=`<div class="empty"><div class="empty-icon">🌐</div><div class="empty-title">Нет серверов</div><div class="empty-desc">Добавь серверы в config.json</div></div>`;return}
+    listEl.innerHTML=s.servers.map(sv=>{
+      const isActive = s.currentServer?.name===sv.name;
+      return `<div class="xray-server ${isActive?'active':''}">
+        <div>
+          <div class="xray-name">${esc(sv.name)} ${isActive?'<span class="badge badge-online">активен</span>':''}</div>
+          <div class="xray-meta">${esc(sv.type.toUpperCase())} • ${esc(sv.address)}:${sv.port}</div>
+        </div>
+        ${isActive?'<span class="chip success">✓ Текущий</span>':'<span class="chip" style="opacity:.5">авто</span>'}
+      </div>`;
+    }).join('');
+  }catch(err){toast('Ошибка',err.message,'error')}
+}
+
+// ACCOUNT
+function loadAccount(){document.getElementById('acc-username').textContent=getUser()}
+document.getElementById('password-form').onsubmit=async(e)=>{
+  e.preventDefault();
+  const oldP=document.getElementById('old-password').value;
+  const newP=document.getElementById('new-password').value;
+  const confirmP=document.getElementById('confirm-password').value;
+  if(newP!==confirmP)return toast('Ошибка','Пароли не совпадают','warning');
+  if(newP.length<4)return toast('Ошибка','Пароль >= 4 символов','warning');
+  try{const d=await api('/auth/change-password',{method:'POST',body:JSON.stringify({oldPassword:oldP,newPassword:newP})});if(!d.ok)throw new Error(d.error);toast('Успех','Пароль изменён','success');document.getElementById('password-form').reset()}
+  catch(err){toast('Ошибка',err.message,'error')}
+};
+
+// UTILS
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
+function timeAgo(ts){if(!ts)return'';const s=Math.floor((Date.now()-ts)/1000);if(s<60)return`${s}с назад`;const m=Math.floor(s/60);if(m<60)return`${m}м назад`;const h=Math.floor(m/60);if(h<24)return`${h}ч назад`;return`${Math.floor(h/24)}д назад`}
+function formatUptime(s){const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d>0?`${d}д ${h}ч`:h>0?`${h}ч ${m}м`:`${m}м`}
+
+// START
+if(getToken())showApp();else showAuth();
+setInterval(()=>{if(document.getElementById('page-dashboard').classList.contains('active'))loadDashboard()},30000);
+setInterval(()=>{if(document.getElementById('page-security').classList.contains('active'))loadSecurity()},15000);
+</script>
+</body>
+</html>

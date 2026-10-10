@@ -1,0 +1,23 @@
+{
+  "name": "frbox",
+  "version": "3.0.0",
+  "type": "module",
+  "description": "FRbox — private Jackbox Games server by @error_kill",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "keywords": [
+    "jackbox",
+    "ecast",
+    "blobcast",
+    "jackbox-server"
+  ],
+  "author": "@error_kill",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.2.1",
+    "socks-proxy-agent": "^10.1.0",
+    "ws": "^8.19.0"
+  }
+}

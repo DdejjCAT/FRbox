@@ -1,0 +1,82 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #0f0f14;
+  color: #e8e8ee;
+  min-height: 100vh;
+}
+.container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+h1 { margin-bottom: 24px; font-size: 28px; }
+h2 { margin: 24px 0 12px; font-size: 20px; color: #9aa0ff; }
+
+.card {
+  background: #1a1a24;
+  border: 1px solid #2a2a3a;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 16px;
+}
+
+input, button {
+  width: 100%;
+  padding: 12px 14px;
+  margin: 6px 0;
+  border-radius: 8px;
+  border: 1px solid #2a2a3a;
+  background: #0f0f14;
+  color: #e8e8ee;
+  font-size: 14px;
+}
+input:focus { outline: none; border-color: #6c72ff; }
+
+button {
+  background: #6c72ff;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+button:hover { background: #5a60ee; }
+button.danger { background: #e04040; }
+button.danger:hover { background: #c03030; }
+button.ghost { background: transparent; border: 1px solid #2a2a3a; }
+
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; }
+
+.error { color: #ff6b6b; margin: 8px 0; font-size: 13px; }
+.success { color: #51cf66; margin: 8px 0; font-size: 13px; }
+
+.room-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px;
+  background: #14141e;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.room-item .code { font-family: monospace; font-size: 18px; font-weight: bold; color: #9aa0ff; }
+.room-item .meta { font-size: 13px; color: #888; }
+
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.tab {
+  padding: 10px 18px;
+  background: #1a1a24;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid #2a2a3a;
+}
+.tab.active { background: #6c72ff; border-color: #6c72ff; }
+
+.hidden { display: none !important; }
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 24px;
+}
+.badge {
+  display: inline-block; padding: 3px 8px; border-radius: 4px;
+  font-size: 11px; background: #2a2a3a; margin-left: 6px;
+}
+.badge.online { background: #2d6a3e; color: #7fff9f; }
+.badge.offline { background: #6a2d2d; color: #ff9f9f; }

@@ -1,0 +1,18 @@
+{
+  "port": 3489,
+  "host": "jack.nevpn2.fenst4r.live",
+  "internalToken": "REPLACETHIS",
+  "mitm": {
+    "enabled": false,
+    "mirrorUrl": "https://ecast-qa.jackboxgames.com"
+  },
+  "xrayBin": "./xray-bin/xray",
+  "xrayLocalPort": 10808,
+  "xraySubscription": "REPLACETHIS",
+  "xraySubscriptionHeaders": {
+    "User-Agent": "v2rayTun/3.2.1 (Android 13; SM-G998B)",
+    "X-HWID": "3e56b024e5fd0fab50f417439624f1c5c0e5b0d3d1774951bcad57e0b140fa18",
+    "Accept": "text/plain, */*;q=0.8",
+    "X-Requested-With": "com.v2ray.tun"
+  }
+}
