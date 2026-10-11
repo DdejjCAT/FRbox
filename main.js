@@ -1038,6 +1038,11 @@ app.use(async (req, res, next) => {
   return forwardUpstream(req, res, { upstream: MIXPANEL_UPSTREAM, stripPrefix: "/mixpanel", host: "api-js.mixpanel.com", logTag: "MIXPANEL", echoOrigin: false });
 });
 
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith("/storage/")) return next();
+  return proxyToJackbox(req, res, "STORAGE");
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
@@ -1859,7 +1864,7 @@ app.use(async (req, res) => {
   const path = req.originalUrl;
   
   if (path.startsWith('/auth/') || path.startsWith('/api/') || path.startsWith('/admin/') || 
-      path.startsWith('/storage') || path === '/room' || path.startsWith('/room?') ||
+      path === '/room' || path.startsWith('/room?') ||
       path.startsWith('/socket.io/')) {
     return res.status(404).json({ ok: true, body: {} });
   }
