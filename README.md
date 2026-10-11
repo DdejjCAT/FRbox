@@ -5,7 +5,7 @@
 Автор: **@error_kill**.
 
 > В репозитории лежит **только сервер**. Файлы сайта-оболочки (контроллер) и бинарник
-> Xray сюда не входят — их нужно установить отдельно (см. разделы ниже).
+> Xray файлы сюда не входят — их нужно установить отдельно (см. разделы ниже).
 > Сайт возьмите из https://github.com/DdejjCAT/jackbox.tv или https://github.com/wheatleyinspace/jackbox.tv.dump (или сами спарсите)
 ---
 
@@ -25,14 +25,9 @@ https://jpp.nevpn2.fenst4r.live
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
 - WebSocket-мост **Ecast ↔ Blobcast** (старые пакеты через Socket.IO v1).
-- Проброс запросов к официальным серверам Jackbox:
-  `/arc/`, `/arcade/` → `api.jackboxgames.com`, `/binjpipe/` → `binjpipe.jackboxgames.com`,
-  `/mixpanel/` → `api-js.mixpanel.com`.
-- Эндпоинт `GET /uuid/image.png` → `{ "jbg_id": "<uuid>" }` (требование клиента).
 - Обход гео-блокировок через **Xray** (socks5 на `127.0.0.1`).
 - Веб-дашборд, регистрация/вход, управление комнатами, банами и IP.
 - Защита от брутфорса и DDoS, бан-лист IP.
-- Режим MITM-зеркала (опционально).
 
 ---
 
@@ -67,7 +62,7 @@ package.json       — зависимости и скрипты
 
 ```bash
 # 1. Клонировать
-git clone <URL_РЕПОЗИТОРИЯ> FRbox
+git clone https://github.com/DdejjCAT/FRbox FRbox
 cd FRbox
 
 # 2. Установить зависимости
@@ -276,8 +271,7 @@ systemctl restart nginx
 - `/room` — просмотр комнаты.
 
 Регистрация: `POST /auth/register` (`username` ≥ 3, `password` ≥ 4), вход — `POST /auth/login`.
-Данные пользователей хранятся в `data/users.json`, баны — в `data/bans.json`
-(создаются автоматически; в репозиторий не коммитятся).
+Данные пользователей хранятся в `data/users.json`, баны — в `data/bans.json`.
 
 Админ-эндпоинты требуют заголовок `x-internal-token: <internalToken>`:
 
