@@ -317,3 +317,26 @@ systemctl restart nginx
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).
+
+---
+
+## Связь и сообщество
+
+- Связь: t.me/error_kill (TG/DS)
+- Все обновления и логи создания сервера можно видеть в чате русского комьюнити Jackbox: t.me/Jackbox_Pack_Chat
+
+---
+
+## Благодарности
+
+Спасибо этим людям (Telegram):
+
+- https://t.me/mazilofk
+- https://t.me/CapringYT
+- https://t.me/Loamfy
+- https://t.me/sssssggggg1234
+- https://t.me/FfGior — за вдохновение
+
+---
+
+Простите, что я так плох в том, что делаю, но ГДЕ ПУБЛИЧНЫЙ КОД СОВРЕМЕННОГО СЕРВЕРА JACKBOX НА СЕГОДНЯШНЕЕ ВРЕМЯ??!
