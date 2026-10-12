@@ -1,9 +1,8 @@
 // ================================================================================
-// FRbox Server v3.0 - Jackbox Games Private Server
+// FRbox Server v3.0 - Jackbox Games Private Server (Ecast + Blobcast)
 // by @error_kill
 // JPP1-TMP3
 // ================================================================================
-
 // ======================= IMPORTS =========================
 import express from "express";
 import http from "http";
@@ -12,6 +11,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import fs from "fs";
 import * as urlNode from "url";
 import crypto from "crypto";
+import { fileURLToPath } from "url";
 import { spawn } from 'child_process';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
@@ -34,6 +34,61 @@ try {
 const INTERNAL_TOKEN = CONFIG.internalToken || "debug-token";
 const PORT = CONFIG.port || 3489;
 const accessibleHost = CONFIG.host || "jack.fenst4r.live";
+
+// ======================= TWITCH (требование входа) ===================
+const TWITCH = {
+  clientId: String((CONFIG.twitch && CONFIG.twitch.clientId) || ""),
+  testToken: String((CONFIG.twitch && typeof CONFIG.twitch.testToken === "string") ? CONFIG.twitch.testToken : "LOCAL-TWITCH-TOKEN"),
+  enabled: !(CONFIG.twitch && CONFIG.twitch.enabled === false),
+  enforce: !(CONFIG.twitch && CONFIG.twitch.enforce === false)
+};
+// Проверка токена через /oauth2/validate не требует Client-ID/регистрации приложения,
+// поэтому любой настоящий токен Twitch (от любого клиента) валиден. clientId нужен только
+// для встроенного OAuth-редиректа контроллера (получение токена), не для проверки.
+function twitchEnabled() { return TWITCH.enabled; }
+function twitchMode() {
+  if (!TWITCH.enabled) return "off";
+  if (TWITCH.clientId) return "live";
+  if (TWITCH.testToken) return "stub";
+  return "validate";
+}
+// Валидация токена от контроллера: сначала тестовый токен (заглушка), затем реальный /oauth2/validate.
+async function validateTwitchToken(accessToken) {
+  if (!accessToken) return null;
+  if (TWITCH.testToken && accessToken === TWITCH.testToken) {
+    return { id: "local-test", login: "test", display: "Test Twitch" };
+  }
+  return await fetchTwitchUser(accessToken);
+}
+// Проверка токена Twitch без app/Client-ID (dev.twitch.tv/docs/authentication/validate-tokens).
+async function fetchTwitchUser(accessToken) {
+  if (!accessToken) return null;
+  try {
+    const res = await fetch("https://id.twitch.tv/oauth2/validate", {
+      headers: { Authorization: `OAuth ${accessToken}` }
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json || !json.login) return null;
+    return {
+      id: json.user_id || json.login,
+      login: json.login,
+      display: json.login,
+      clientId: json.client_id || null,
+      expiresIn: json.expires_in || null
+    };
+  } catch (err) {
+    log("TWITCH", `⚠️ token validation failed: ${err.message}`);
+    return null;
+  }
+}
+
+// Отклоняем вход в комнату, требующую Twitch: шлём код 2015 и закрываем сокет.
+function twitchRejectJoin(socket, roomCode, ip) {
+  log("TWITCH", `🚫 ${roomCode}: вход без валидного twitch-token (${ip})`);
+  try { socket.send(JSON.stringify({ opcode: "error", result: { code: 2015, msg: "twitch login required" } })); } catch {}
+  setTimeout(() => { try { socket.terminate(); } catch {} }, 300);
+}
 
 // ======================= MITM MIRROR ===================
 const MITM = {
@@ -511,12 +566,15 @@ setInterval(async () => {
 const rooms = new Map();
 const preparedRooms = new Map();
 
+const MODERATION_TAGS = new Set(["quiplash3-tjsp","awshirt-tjsp","drawful2international","bigsurvey","fakinitxl","jackbox-talks","quiplash3","worldchamps","fourbage","htmf","antique-freak","range-game","awshirt2","risky-text","us-them","fakinit2","drawful3","captcha","you-ruined-it","mic-game","cookies","dirty-detectives","grating-cards","megafriends","debate","reaction","processing"]);
+
 function createRoom(appId, appTag, maxPlayers, roomCode, userId) {
   const room = {
     appId, appTag, userId,
     maxPlayers: maxPlayers || 8, minPlayers: 0, roomCode,
     locked: false, gameStarted: false,
     audienceEnabled: false, audienceConnected: false, audienceId: null,
+    twitchRequired: false,
     gamePassword: null, moderatorPassword: null,
     players: new Map(), moderators: new Map(),
     disconnectedPlayers: new Map(), disconnectedTimers: new Map(),
@@ -557,6 +615,190 @@ function logProxyEntry(entry) {
   if (proxyLog.length % 10 === 0) {
     try { fs.writeFileSync(PROXY_LOG_FILE, JSON.stringify(proxyLog, null, 2)); } catch {}
   }
+}
+
+// ======================= UPSTREAM TARGET PROXY =======================
+// Frontend can pick a custom Jackbox server. When proxy mode is active it
+// sends `x-upstream-server: <target>` and we forward HTTP + WS there via xray.
+const upstreamTargets = new Map(); // roomCode -> { host, ts }
+const UPSTREAM_TTL = 5 * 60 * 1000;
+
+function needsVpn(targetHost) {
+  return /(^|\.)jackboxgames\.com$/i.test(String(targetHost || ""));
+}
+
+function normalizeUpstreamTarget(raw) {
+  let t = String(raw || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  if (!t || t === "live") return null;
+  if (!t.includes(".")) t = `${t}.jackboxgames.com`;
+  if (t === String(accessibleHost).toLowerCase()) return null;
+  return t;
+}
+
+function pickUpstreamTarget(req) {
+  const raw = req.headers["x-upstream-server"] || req.query.upstream || req.query.target;
+  return normalizeUpstreamTarget(raw);
+}
+
+function pruneUpstreamTargets() {
+  const now = Date.now();
+  for (const [code, info] of upstreamTargets) {
+    if (now - info.ts > UPSTREAM_TTL) upstreamTargets.delete(code);
+  }
+}
+
+async function proxyToTarget(req, res, targetHost, source) {
+  let path = req.originalUrl;
+  try {
+    const u = new URL(path, "http://x");
+    u.searchParams.delete("upstream");
+    u.searchParams.delete("target");
+    path = u.pathname + (u.search || "");
+  } catch (e) { /* keep original */ }
+
+  let requestBody = null;
+  if (req.body && Object.keys(req.body).length > 0) requestBody = JSON.stringify(req.body);
+
+  const headers = {};
+  const drop = new Set(["host", "content-length", "connection", "keep-alive", "transfer-encoding", "accept-encoding", "x-upstream-server", "x-internal-token", "x-forwarded-for"]);
+  for (const [k, v] of Object.entries(req.headers || {})) {
+    if (!drop.has(k.toLowerCase())) headers[k] = v;
+  }
+  headers["host"] = targetHost;
+
+  const vpnTries = req.method === "GET" ? 3 : 1;
+  const plans = needsVpn(targetHost)
+    ? [{ via: "xray", tries: vpnTries }, { via: "direct", tries: 1 }]
+    : [{ via: "direct", tries: 1 }, { via: "xray", tries: vpnTries }];
+
+  for (const plan of plans) {
+    for (let attempt = 1; attempt <= plan.tries; attempt++) {
+      const agent = plan.via === "xray" ? await xrayManager.getAgent() : null;
+      if (plan.via === "xray" && !agent) break;
+      const label = agent ? "vpn" : "direct";
+      const startTime = Date.now();
+      const entry = {
+        timestamp: startTime, source, method: req.method, path,
+        targetUrl: `https://${targetHost}${path}`, clientIP: getClientIP(req),
+        requestHeaders: { ...headers }, requestBody: truncateBody(requestBody),
+        upstream: targetHost, via: label
+      };
+
+      log(source, `🔀 ${req.method} ${path} → ${targetHost}${path} [${label}${plan.tries > 1 ? ` ${attempt}/${plan.tries}` : ""}]`);
+
+      try {
+        const result = await new Promise((resolve, reject) => {
+          const options = {
+            hostname: targetHost, port: 443, path, method: req.method, headers,
+            rejectUnauthorized: false, servername: targetHost
+          };
+          if (agent) options.agent = agent;
+          const proxyReq = https.request(options, (up) => {
+            const chunks = [];
+            up.on("data", (c) => chunks.push(c));
+            up.on("end", () => resolve({ statusCode: up.statusCode, headers: up.headers, buf: Buffer.concat(chunks) }));
+            up.on("error", reject);
+          });
+          proxyReq.setTimeout(30000, () => proxyReq.destroy(new Error("timeout")));
+          proxyReq.on("error", reject);
+          if (requestBody) proxyReq.write(requestBody);
+          proxyReq.end();
+        });
+
+        let buf = result.buf;
+        const ct = String(result.headers["content-type"] || "");
+        if (ct.includes("json")) {
+          try {
+            const json = JSON.parse(buf.toString("utf8"));
+            const body = json && json.body;
+            if (body && body.code && (body.host || body.audienceHost)) {
+              const code = String(body.code).toUpperCase();
+              const realHost = String(body.host || body.audienceHost);
+              upstreamTargets.set(code, { host: realHost, ts: Date.now() });
+              log("UPSTREAM", `📌 Room ${code} → ${realHost}`);
+              body.host = accessibleHost;
+              body.audienceHost = accessibleHost;
+              buf = Buffer.from(JSON.stringify(json));
+            }
+          } catch (e) { /* not a room payload, pass through */ }
+        }
+
+        entry.responseStatus = result.statusCode;
+        entry.duration = Date.now() - startTime;
+        entry.responseSize = buf.length;
+        logProxyEntry(entry);
+        const out = {};
+        for (const [k, v] of Object.entries(result.headers)) {
+          if (!["transfer-encoding", "connection", "keep-alive", "content-length"].includes(k.toLowerCase())) out[k] = v;
+        }
+        out["access-control-allow-origin"] = "*";
+        out["content-length"] = String(buf.length);
+        res.writeHead(result.statusCode, out);
+        res.end(buf);
+        return;
+      } catch (err) {
+        entry.error = err.message;
+        entry.duration = Date.now() - startTime;
+        logProxyEntry(entry);
+        log(source, `❌ upstream ${targetHost} [${label} ${attempt}/${plan.tries}]: ${err.message}`);
+        if (plan.via === "xray" && agent) { try { await xrayManager.tryNextServer(); } catch (e) { /* ignore */ } }
+      }
+    }
+  }
+
+  if (!res.headersSent) res.status(502).json({ error: "upstream proxy error" });
+}
+
+async function tunnelUpstreamWs(socket, req, realHost) {
+  const proto = req.headers["sec-websocket-protocol"];
+  const cleanUrl = String(req.url || "").replace(/([?&])(upstream|target)=[^&]*/gi, "$1").replace(/[?&]$/, "");
+
+  const pending = [];
+  let open = false;
+  let active = null;
+  socket.on("message", (data, isBinary) => {
+    if (open && active) { try { active.send(data, { binary: isBinary }); } catch {} }
+    else pending.push({ data, isBinary });
+  });
+  socket.on("close", () => { try { active && active.close(); } catch {} });
+  socket.on("error", () => { try { active && active.terminate(); } catch {} });
+
+  const strategies = needsVpn(realHost) ? ["xray", "direct"] : ["direct", "xray"];
+
+  for (const via of strategies) {
+    const agent = via === "xray" ? await xrayManager.getAgent() : null;
+    if (via === "xray" && !agent) continue;
+
+    const ok = await new Promise((resolve) => {
+      const opts = { rejectUnauthorized: false, handshakeTimeout: 15000 };
+      if (agent) opts.agent = agent;
+      let upstream;
+      try {
+        upstream = new WebSocket(`wss://${realHost}${cleanUrl}`, proto ? [proto] : [], opts);
+      } catch (e) {
+        log("UPSTREAM-WS", `❌ ${realHost} [${via}] ${e.message}`);
+        return resolve(false);
+      }
+      let done = false;
+      upstream.on("open", () => {
+        done = true; open = true; active = upstream;
+        log("UPSTREAM-WS", `✅ ${realHost} [${via}]`);
+        for (const m of pending) { try { upstream.send(m.data, { binary: m.isBinary }); } catch {} }
+        pending.length = 0;
+        upstream.on("message", (data, isBinary) => { try { socket.send(data, { binary: isBinary }); } catch {} });
+        upstream.on("close", (code, reason) => { try { socket.close(code, reason); } catch { socket.terminate(); } });
+        upstream.on("error", (e) => { log("UPSTREAM-WS", `❌ ${e.message}`); try { socket.terminate(); } catch {} });
+        resolve(true);
+      });
+      upstream.on("error", (e) => { if (!done) { log("UPSTREAM-WS", `❌ ${realHost} [${via}] ${e.message}`); try { upstream.terminate(); } catch {} resolve(false); } });
+      upstream.on("close", () => { if (!done) resolve(false); });
+    });
+
+    if (ok) return;
+    if (via === "xray") { try { await xrayManager.tryNextServer(); } catch (e) { /* ignore */ } }
+  }
+
+  try { socket.terminate(); } catch (e) { /* ignore */ }
 }
 
 async function proxyToJackbox(req, res, source) {
@@ -1071,6 +1313,16 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") return next();
+  const target = pickUpstreamTarget(req);
+  if (target && req.originalUrl.startsWith("/api/")) {
+    pruneUpstreamTargets();
+    return proxyToTarget(req, res, target, "UPSTREAM");
+  }
+  next();
+});
+
 function checkToken(req, res, next) {
   if (req.headers["x-internal-token"] !== INTERNAL_TOKEN) return res.status(403).json({ error: "Forbidden" });
   next();
@@ -1080,7 +1332,10 @@ function checkToken(req, res, next) {
 const BRUTE_WINDOW = 15 * 60 * 1000;
 const BRUTE_MAX_FAILS = 5;
 const DDOS_WINDOW = 10 * 1000;
-const DDOS_MAX_REQUESTS = 30;
+// Легитимный всплеск (телефон, пересоединение, загрузка ассетов, WS-апгрейды)
+// легко превышает 30 запросов/10с — это банило хост на 30 минут и вешало игру
+// (лицензия: фиббэйдже зависал на экране без итогов).
+const DDOS_MAX_REQUESTS = 300;
 const BAN_DURATION = 30 * 60 * 1000;
 
 const failedLogins = new Map();
@@ -1320,11 +1575,12 @@ app.post("/api/v2/rooms", (req, res) => {
   room.gamePassword = password || null;
   room.moderatorPassword = moderatorPassword || null;
   room.audienceEnabled = audienceEnabled === true;
+  room.twitchRequired = body.twitchLocked === true || body.twitchRequired === true || body.requireTwitch === true;
   room.owner = owner;
   room.creatorIP = ip;
   rooms.set(code, room);
 
-  log("ROOM", `Created: ${code} (${appTag})`, { owner, creatorIP: ip });
+  log("ROOM", `Created: ${code} (${appTag})`, { owner, creatorIP: ip, twitch: room.twitchRequired });
   const resp = { host: accessibleHost, code, token: room.hostToken };
   res.json({ ok: true, body: { ...resp }, ...resp });
 });
@@ -1353,9 +1609,9 @@ app.get("/api/v2/rooms/:code", (req, res) => {
         host: accessibleHost, audienceHost: accessibleHost,
         locked: room.locked, full: isFull,
         maxPlayers: room.maxPlayers, minPlayers: room.minPlayers,
-        moderationEnabled: false,
-        passwordRequired: !!(room.gamePassword || room.moderatorPassword),
-        twitchLocked: false, locale: "en", keepalive: false,
+        moderationEnabled: MODERATION_TAGS.has(room.appTag),
+        passwordRequired: !!room.gamePassword,
+        twitchLocked: !!(room.twitchRequired && twitchEnabled()), locale: "en", keepalive: false,
         controllerBranch: ""
       }
     });
@@ -1375,9 +1631,9 @@ app.get("/api/v2/rooms/:code", (req, res) => {
         host: accessibleHost, audienceHost: accessibleHost,
         locked: !!blob.locked, full: false,
         maxPlayers: blob.maxPlayers || 0, minPlayers: 0,
-        moderationEnabled: false,
+        moderationEnabled: MODERATION_TAGS.has(blob.appTag),
         passwordRequired: !!blob.password,
-        twitchLocked: false, locale: "en", keepalive: false,
+        twitchLocked: !!(blob.twitchRequired && twitchEnabled()), locale: "en", keepalive: false,
         controllerBranch: ""
       }
     });
@@ -1412,6 +1668,7 @@ class BlobcastRoom {
     this.appTag = null;
     this.audienceEnabled = false;
     this.password = null;
+    this.twitchRequired = false;
     this.maxPlayers = 0;
     this.hostSession = null;
     this.pc = 0;
@@ -1503,6 +1760,7 @@ app.get("/api/v2/my-rooms", requireAuth, (req, res) => {
       players: r.players.size, maxPlayers: r.maxPlayers,
       host: !!r.host, locked: r.locked,
       audienceEnabled: r.audienceEnabled,
+      twitchRequired: !!r.twitchRequired,
       moderators: r.moderators?.size || 0,
       minPlayers: r.minPlayers,
       gameStarted: r.gameStarted || false,
@@ -1577,6 +1835,7 @@ app.get("/api/v2/rooms/:code/info", (req, res) => {
       players: room.players.size, maxPlayers: room.maxPlayers, minPlayers: room.minPlayers,
       moderators: room.moderators.size,
       host: !!room.host, locked: room.locked,
+      twitchRequired: !!room.twitchRequired,
       audienceEnabled: room.audienceEnabled || isFull || gameStarted,
       gamePassword: room.gamePassword, moderatorPassword: room.moderatorPassword,
       owner: room.owner, created: room.created
@@ -1622,6 +1881,196 @@ app.get("/uuid/image.png", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/json");
   res.json({ jbg_id: crypto.randomUUID() });
+});
+
+// ======================= SURVIVE THE INTERNET PHOTOS ===================
+// Мод «Выжить в Мемтернете» отдаёт контент с runtime-именами вида
+// images/survivetheinternet/photos/CatAYaZnau[-thumb].jpg (базовое имя + случайный суффикс).
+// CSS мапит базовые имена на hashed-ассеты; здесь мы обслуживаем любые такие запросы,
+// сопоставляя токен с ближайшим известным именем фото и отдавая локальную картинку.
+const STE_PHOTO_MAP = (() => {
+  try {
+    return JSON.parse(fs.readFileSync("/root/jack/data/ste-photo-map.json", "utf-8")).photos || {};
+  } catch { return {}; }
+})();
+const STE_PHOTO_NAMES = Object.keys(STE_PHOTO_MAP).sort((a, b) => b.length - a.length);
+
+app.get(/\/images\/survivetheinternet\/photos\/([A-Za-z0-9_-]+)\.(jpg|jpeg|png|webp)$/i, (req, res, next) => {
+  const raw = req.params[0];
+  const isThumb = raw.endsWith("-thumb");
+  const token = isThumb ? raw.slice(0, -"-thumb".length) : raw;
+
+  let name = null;
+  if (STE_PHOTO_MAP[token]) name = token;
+  else {
+    for (const n of STE_PHOTO_NAMES) {
+      if (token.startsWith(n)) { name = n; break; }
+    }
+  }
+  if (!name) return next();
+
+  const entry = STE_PHOTO_MAP[name];
+  const rel = isThumb ? (entry.thumb || entry.final) : (entry.final || entry.thumb);
+  if (!rel) return next();
+  if (rel.includes("..")) return next();
+
+  const abs = SITE_ROOT + "/" + rel.replace(/^\//, "");
+  if (!fs.existsSync(abs)) return next();
+
+  log("STE-PHOTOS", `📷 "${token}" -> ${name}${isThumb ? " (thumb)" : ""} => ${rel} (${req.originalUrl})`);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  return res.sendFile(abs);
+});
+
+const TWITCH_LOGIN_JS = `
+window.__twitchLogin=function(){
+  var TTG="https://twitchtokengenerator.com";
+  var SCOPES="chat:read+chat:edit+user:read:chat";
+  var win=window.open("about:blank","ttg");
+  function b64(s){return btoa(unescape(encodeURIComponent(s)));}
+  (async function(){
+    try{
+      var res=await fetch(TTG+"/api/create/"+b64("FRbox")+"/"+SCOPES+"?_="+Date.now(),{cache:"no-store"});
+      var flow=await res.json();
+      if(!flow||!flow.success)throw new Error((flow&&flow.message)||"create failed");
+      var reg=await fetch("/twitch/flow",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:flow.id})}).then(function(r){return r.json();}).catch(function(){return null;});
+      var key=(reg&&reg.key)||"";
+      try{sessionStorage.setItem("twitch_flow",JSON.stringify({id:flow.id,key:key}));}catch(e){}
+      if(win&&!win.closed){win.location=flow.message;}else{window.open(flow.message,"_blank");}
+      var deadline=Date.now()+15*60*1000;
+      for(;;){
+        var q="/twitch/flow/status?id="+encodeURIComponent(flow.id)+(key?"&key="+encodeURIComponent(key):"");
+        var fr=await fetch(q,{cache:"no-store"}).then(function(r){return r.json();}).catch(function(){return null;});
+        var f=fr&&fr.flow;
+        if(f&&f.status==="ok"&&f.token){
+          localStorage.setItem("tv:token",f.token);
+          if(win&&!win.closed){try{win.close();}catch(e){}}
+          window.location.reload();
+          return;
+        }
+        if(f&&(f.status==="error"||f.status==="timeout")){alert("Twitch: "+(f.error||f.status));return;}
+        if(Date.now()>deadline){alert("Twitch: время ожидания истекло");return;}
+        await new Promise(function(r){setTimeout(r,2500);});
+      }
+    }catch(e){alert("Twitch login: "+e.message);}
+  })();
+};
+`;
+
+// Динамический конфиг Twitch для контроллера (читает config.json -> twitch).
+// Клиентский бандл берёт отсюда client id и тестовый токен; при пустом clientId работает заглушка.
+app.get("/twitch-config.js", (req, res) => {
+  res.type("application/javascript");
+  res.setHeader("Cache-Control", "no-store");
+  res.send(
+    `window.__TWITCH_CLIENT_ID__=${JSON.stringify(TWITCH.clientId)};` +
+    `window.__TWITCH_TEST_TOKEN__=${JSON.stringify(TWITCH.testToken)};` +
+    TWITCH_LOGIN_JS
+  );
+});
+
+const twitchFlowDir = (CONFIG.twitch && CONFIG.twitch.flowDir)
+  ? String(CONFIG.twitch.flowDir)
+  : fileURLToPath(new URL("./twitch-auth/results/", import.meta.url));
+const twitchFlows = new Map();
+
+function twitchPollFlow(id) {
+  const existing = twitchFlows.get(id);
+  if (existing) return existing;
+  const rec = { id, status: "pending", started: Date.now() };
+  twitchFlows.set(id, rec);
+  const deadline = Date.now() + 15 * 60 * 1000;
+  (async () => {
+    for (;;) {
+      let s = null;
+      try {
+        const r = await fetch("https://twitchtokengenerator.com/api/status/" + id + "?_=" + Date.now(), { headers: { "Cache-Control": "no-store" } });
+        s = await r.json().catch(() => null);
+      } catch (e) {}
+      if (s && s.success) {
+        Object.assign(rec, { status: "ok", at: new Date().toISOString(), token: s.token, refresh: s.refresh, username: s.username, user_id: s.user_id, scopes: s.scopes, client_id: s.client_id });
+        try {
+          fs.mkdirSync(twitchFlowDir, { recursive: true });
+          fs.writeFileSync(twitchFlowDir + id + ".json", JSON.stringify(rec, null, 2));
+        } catch (e) {}
+        log("TWITCH", "flow " + id + " authorized user=" + s.username);
+        return;
+      }
+      if (s && s.error === 3) {
+        if (Date.now() > deadline) { Object.assign(rec, { status: "timeout" }); return; }
+      } else {
+        Object.assign(rec, { status: "error", error: (s && s.message) || "status error" });
+        log("TWITCH", "flow " + id + " error: " + rec.error);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+  })();
+  return rec;
+}
+
+function twitchSafeFlow(rec) {
+  return { id: rec.id, status: rec.status, started: rec.started, at: rec.at, username: rec.username, user_id: rec.user_id, scopes: rec.scopes, error: rec.error };
+}
+
+app.post("/twitch/flow", (req, res) => {
+  const id = req.body && String(req.body.id || "");
+  if (!/^[a-z0-9]{10,40}$/.test(id)) return res.status(400).json({ success: false, message: "invalid flow id" });
+  const rec = twitchPollFlow(id);
+  if (!rec.key) rec.key = crypto.randomBytes(16).toString("hex");
+  log("TWITCH", "flow registered " + id + " (" + rec.status + ")");
+  res.json({ success: true, id, status: rec.status, key: rec.key });
+});
+
+app.get("/twitch/flow/status", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const id = req.query && req.query.id ? String(req.query.id) : "";
+  if (id) {
+    const rec = twitchFlows.get(id);
+    if (!rec) return res.json({ success: true, flow: null });
+    const authed = rec.key && req.query.key && String(req.query.key) === rec.key;
+    return res.json({ success: true, flow: authed ? rec : twitchSafeFlow(rec) });
+  }
+  const flows = [...twitchFlows.values()].sort((a, b) => b.started - a.started).map(twitchSafeFlow);
+  res.json({ success: true, flows });
+});
+
+app.post("/twitch/forget", (req, res) => {
+  const id = req.body && String(req.body.id || "");
+  if (id) {
+    const rec = twitchFlows.get(id);
+    if (rec && (!rec.key || String((req.body && req.body.key) || "") === rec.key)) twitchFlows.delete(id);
+    try { fs.unlinkSync(twitchFlowDir + id + ".json"); } catch (e) {}
+  } else {
+    for (const fid of [...twitchFlows.keys()]) twitchFlows.delete(fid);
+    try {
+      for (const f of fs.readdirSync(twitchFlowDir)) {
+        if (f.endsWith(".json")) { try { fs.unlinkSync(twitchFlowDir + f); } catch (e) {} }
+      }
+    } catch (e) {}
+  }
+  log("TWITCH", "forget " + (id || "all"));
+  res.json({ success: true });
+});
+
+app.post("/twitch/validate", async (req, res) => {
+  const token = req.body && (req.body.access_token || req.body.token);
+  if (!token) return res.status(400).json({ success: false, message: "access_token is required" });
+  let ttg = null, twitch = null;
+  try {
+    const r = await fetch("https://twitchtokengenerator.com/api/v2/tokens/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ access_token: token })
+    });
+    ttg = { ok: r.ok, status: r.status, data: await r.json().catch(() => null) };
+  } catch (e) { ttg = { ok: false, status: 0, error: e.message }; }
+  try {
+    const r = await fetch("https://id.twitch.tv/oauth2/validate", { headers: { Authorization: "OAuth " + token } });
+    twitch = { ok: r.ok, status: r.status, data: await r.json().catch(() => null) };
+  } catch (e) { twitch = { ok: false, status: 0, error: e.message }; }
+  log("TWITCH", "validate " + String(token).slice(0, 6) + "... ttg=" + ttg.ok + " twitch=" + twitch.ok);
+  res.json({ success: !!(twitch.ok || ttg.ok), ttg, twitch });
 });
 
 // Панель (public/) — на корне основного сервера; на других хостах (jpp.*) — сайт-оболочка контроллера (SITE_ROOT).
@@ -1871,7 +2320,8 @@ app.use(async (req, res) => {
 
   // SPA-фолбэк: навигационные запросы к сайту отдаём из index.html (аналог nginx try_files)
   if ((req.method === "GET" || req.method === "HEAD") && req.accepts("html")) {
-    const indexPath = isPanelHost(req) ? "public/index.html" : SITE_ROOT + "/index.html";
+    const panelIndex = fileURLToPath(new URL("./public/index.html", import.meta.url));
+    const indexPath = isPanelHost(req) ? panelIndex : SITE_ROOT + "/index.html";
     if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
   }
   
@@ -2047,6 +2497,7 @@ function handleCreateRoom(session, action) {
   const options = (action.options && typeof action.options === 'object') ? action.options : {};
   if (typeof options.password === 'string') room.password = options.password;
   if (typeof options.maxPlayers === 'number') room.maxPlayers = options.maxPlayers;
+  if (options.twitchLocked === true || options.twitchRequired === true || action.twitchLocked === true || action.twitchRequired === true) room.twitchRequired = true;
   if (action.appId) {
     room.appId = String(action.appId);
     for (const [tag, id] of Object.entries(APP_TAGS)) {
@@ -2227,7 +2678,7 @@ function blobHostEvent(blob, event, fields) {
 
 function onBlobcastEcastClient(socket, query, blob, opts) {
   const isAudience = !!(opts && opts.isAudience);
-  const userId = String(query['user-id'] || query.userId || '');
+  let userId = String(query['user-id'] || query.userId || '');
   const name = String(query.name || (isAudience ? 'Audience' : 'Player')).substring(0, 32);
 
   if (!isAudience && blob.password && query.password !== blob.password) {
@@ -2242,17 +2693,42 @@ function onBlobcastEcastClient(socket, query, blob, opts) {
   let profileId = null;
   let reconnect = false;
 
+  // Идёт ли игра (не лобби) — чтобы переподключение по имени не создавало второго игрока.
+  const gameInProgress = (() => {
+    const roomVal = blob.entities.get('bc:room');
+    if (!roomVal || typeof roomVal !== 'string') return false;
+    try {
+      const state = (JSON.parse(roomVal).state || '');
+      return /^(Gameplay|Round|Day)_/.test(state) ||
+        (state && state !== 'Lobby' && state !== 'Logo' && state !== 'EndGame' && !/PostGame/.test(state));
+    } catch { return false; }
+  })();
+
   if (!isAudience && userId) {
     for (const client of blob.clients.values()) {
       if (client.role === 'host' || client.userId !== userId) continue;
-      if (client.connected) {
-        log("BLOBcast↔Ecast", `❌ Duplicate userId ${userId}, closing`);
-        try { socket.close(); } catch {}
-        socket.terminate();
-        return;
-      }
-      reconnect = true;
       profileId = client.id;
+      reconnect = true;
+      if (client.connected) {
+        log("BLOBcast↔Ecast", `♻️ ${name}: userId ${userId} уже подключён — перехватываем сокет вместо дубля`);
+        try { client.socket && client.socket.terminate(); } catch {}
+      }
+      break;
+    }
+  }
+
+  // Fallback: переподключение с другого IP часто приносит новый user-id (перезагрузка).
+  // Если игра уже идёт — занимаем прежний профиль по имени, а не создаём второго игрока.
+  if (!isAudience && !reconnect && gameInProgress) {
+    for (const client of blob.clients.values()) {
+      if (client.role !== 'player' || client.name !== name) continue;
+      profileId = client.id;
+      reconnect = true;
+      if (client.connected) {
+        log("BLOBcast↔Ecast", `♻️ ${name}: прежний сокет жив — перехватываем профиль ${profileId}`);
+        try { client.socket && client.socket.terminate(); } catch {}
+      }
+      break;
     }
   }
 
@@ -2269,6 +2745,7 @@ function onBlobcastEcastClient(socket, query, blob, opts) {
     client.connected = true;
     client.socket = socket;
     client.name = name;
+    userId = client.userId;
   }
 
   // --- entities (для welcome): bc:room + своя customer-сущность + счётчики
@@ -2329,12 +2806,14 @@ function onBlobcastEcastClient(socket, query, blob, opts) {
     }
     log("BLOBcast↔Ecast", `👥 Audience "${name}" joined ${blob.code} (id ${profileId})`);
   } else {
-    blobHostEvent(blob, 'CustomerJoinedRoom', {
-      customerUserId: userId,
-      customerName: name,
-      options: { roomcode: '', name: name, email: '', phone: '' }
-    });
-    log("BLOBcast↔Ecast", `🎮 Player "${name}" (${userId}) joined ${blob.code} as profile ${profileId}`);
+    if (!reconnect) {
+      blobHostEvent(blob, 'CustomerJoinedRoom', {
+        customerUserId: userId,
+        customerName: name,
+        options: { roomcode: '', name: name, email: '', phone: '' }
+      });
+    }
+    log("BLOBcast↔Ecast", `🎮 Player "${name}" (${userId}) joined ${blob.code} as profile ${profileId}${reconnect ? " (reconnect)" : ""}`);
   }
 
   socket.on('message', (raw) => {
@@ -2572,6 +3051,20 @@ ecastWss.on("connection", (socket, req) => {
     if (prepared) roomCode = prepared.code;
   }
 
+  const upstreamInfo = upstreamTargets.get(roomCode);
+  if (upstreamInfo && Date.now() - upstreamInfo.ts < UPSTREAM_TTL && upstreamInfo.host) {
+    log("UPSTREAM-WS", `🔀 Tunneling ${roomCode} → ${upstreamInfo.host}`);
+    tunnelUpstreamWs(socket, req, upstreamInfo.host);
+    return;
+  }
+
+  const queryTarget = normalizeUpstreamTarget(query.upstream || query.target);
+  if (queryTarget) {
+    log("UPSTREAM-WS", `🔀 Query upstream ${roomCode} → ${queryTarget}`);
+    tunnelUpstreamWs(socket, req, queryTarget);
+    return;
+  }
+
   let room = rooms.get(roomCode);
   if (!room && isHost) {
     const prepared = pickPreparedRoom(ip);
@@ -2584,6 +3077,17 @@ ecastWss.on("connection", (socket, req) => {
   if (!room && !isHost) {
     const blob = blobcastRooms.get(roomCode);
     if (blob) {
+      const requireTwitch = blob.twitchRequired && TWITCH.enforce && twitchEnabled() && !isAudience && !isAudiencePath;
+      if (requireTwitch) {
+        (async () => {
+          const token = query["twitch-token"] || query.twitchToken;
+          const user = await validateTwitchToken(token);
+          if (!user) return twitchRejectJoin(socket, roomCode, ip);
+          log("TWITCH", `✅ ${roomCode}: твич-вход ${user.display} (${user.login})`);
+          onBlobcastEcastClient(socket, query, blob, { isAudience: isAudience || isAudiencePath });
+        })();
+        return;
+      }
       log("BLOBcast↔Ecast", `🔌 Ecast ${role || 'client'} → bridge to blobcast room ${roomCode}`);
       onBlobcastEcastClient(socket, query, blob, { isAudience: isAudience || isAudiencePath });
       return;
@@ -2601,11 +3105,43 @@ ecastWss.on("connection", (socket, req) => {
   }
 
   if (isHost) onHostConnect(room, socket, ip);
-  else if (isPlayer) onPlayerConnect(room, socket, query.name, query.id ? parseInt(query.id) : null, query.secret, ip);
+  else if (isPlayer) {
+    const taken = findPlayerByName(room, (query.name || "").trim());
+    if (taken && taken.ip && ip && taken.ip !== ip) {
+      // Ник занят с другого IP — сразу в зрители, независимо от твича.
+      log("WS", `🚷 "${query.name}" уже играет с IP ${taken.ip}; заход с ${ip} -> в зрители`);
+      onAudienceConnect(room, socket, query.name, ip, true);
+    } else if (room.twitchRequired && TWITCH.enforce && twitchEnabled() && !isKnownPlayerReconnect(room, query, ip)) {
+      (async () => {
+        const token = query["twitch-token"] || query.twitchToken;
+        const user = await validateTwitchToken(token);
+        if (!user) return twitchRejectJoin(socket, roomCode, ip);
+        log("TWITCH", `✅ ${roomCode}: твич-вход ${user.display} (${user.login})`);
+        onPlayerConnect(room, socket, query.name, query.id ? parseInt(query.id) : null, query.secret, ip, user);
+      })();
+    } else {
+      if (room.twitchRequired && TWITCH.enforce && twitchEnabled()) {
+        log("TWITCH", `♻️ ${roomCode}: реконнект игрока "${query.name || query.id}" — твич уже пройден`);
+      }
+      onPlayerConnect(room, socket, query.name, query.id ? parseInt(query.id) : null, query.secret, ip, null);
+    }
+  }
   else if (isModerator) onModeratorConnect(room, socket, query.name, ip);
   else if (isAudience) onAudienceConnect(room, socket, query.name, ip);
   else socket.terminate();
 });
+
+// Реконнект уже игравшего игрока (есть id или имя в комнате) — повторно твич не требуем:
+// контроллер при реконнекте шлёт id+secret, но ещё не успевает подгрузить twitch-token.
+// Только если заход с того же IP, иначе это чужой — твич обязателен, дальше пойдёт в зрители.
+function isKnownPlayerReconnect(room, query, ip) {
+  const name = (query && query.name ? String(query.name) : "").trim();
+  if (!name) return false;
+  const pl = findPlayerByName(room, name);
+  if (!pl) return false;
+  if (pl.ip && ip && pl.ip !== ip) return false;
+  return true;
+}
 
 function onHostConnect(room, socket, ip) {
   log("WS", `🎮 HOST connected to ${room.roomCode} | IP: ${ip}`);
@@ -2877,10 +3413,25 @@ function applyRoomSettings(room, params) {
   if (typeof params.minPlayers === "number") room.minPlayers = Math.min(room.maxPlayers, Math.max(0, params.minPlayers));
   if (typeof params.locked === "boolean") room.locked = params.locked;
   if (typeof params.audienceEnabled === "boolean") room.audienceEnabled = params.audienceEnabled;
+  if (typeof params.twitchRequired === "boolean") room.twitchRequired = params.twitchRequired;
 }
 
-function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip) {
+function findPlayerByName(room, name) {
+  if (!name) return null;
+  for (const pl of room.players.values()) if (pl && pl.name === name) return pl;
+  return room.disconnectedPlayers.get(name) || null;
+}
+
+function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, twitchUser) {
   const name = (playerName || `PLAYER${room.nextPlayerId}`).trim();
+
+  // Ник уже занят с другого IP -> отправляем в зрители, а не отдаём профиль игрока.
+  const existingByName = findPlayerByName(room, name);
+  if (existingByName && existingByName.ip && ip && existingByName.ip !== ip) {
+    log("WS", `🚷 "${name}" уже играет с IP ${existingByName.ip}; заход с ${ip} -> в зрители`);
+    return onAudienceConnect(room, socket, name, ip, true);
+  }
+
   let id, isReconnect = false;
 
   if (playerId && playerSecret) {
@@ -2897,8 +3448,23 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip) {
     id = old.id; isReconnect = true;
     if (room.disconnectedTimers.has(name)) { clearTimeout(room.disconnectedTimers.get(name)); room.disconnectedTimers.delete(name); }
     room.disconnectedPlayers.delete(name);
-    room.players.set(id, { id, name, socket, secret: playerSecret });
+    room.players.set(id, { id, name, socket, secret: playerSecret, ip: (old.ip || ip) });
     room.pcPlayers.set(id, room.pcPlayers.get(id) || 0);
+  }
+
+  // Переподключение с другого IP: игрок с тем же именем уже подключён (без id/secret).
+  // Занимаем его профиль, а не создаём второго игрока.
+  if (!isReconnect && room.locked) {
+    for (const [pid, pl] of room.players) {
+      if (!pl || pl.name !== name || !pl.socket || pl.socket === socket) continue;
+      log("WS", `♻️ Reconnect takeover: "${name}" ID=${pid} (new socket from ${ip})`);
+      try { pl.socket.terminate(); } catch {}
+      id = pid; isReconnect = true;
+      pl.socket = socket;
+      if (room.disconnectedTimers.has(name)) { clearTimeout(room.disconnectedTimers.get(name)); room.disconnectedTimers.delete(name); }
+      room.disconnectedPlayers.delete(name);
+      break;
+    }
   }
 
   const totalPlayers = room.players.size + room.disconnectedPlayers.size;
@@ -2908,14 +3474,15 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip) {
     if (room.locked) return socket.terminate();
     if (totalPlayers >= room.maxPlayers) return socket.terminate();
     id = room.nextPlayerId++;
-    room.players.set(id, { id, name, socket, secret: playerSecret });
+    room.players.set(id, { id, name, socket, secret: playerSecret, ip });
     room.pcPlayers.set(id, 0);
   }
 
   const secret = playerSecret || "00000000-0000-0000-0000-000000000000";
   if (!playerSecret) room.players.get(id).secret = secret;
+  if (twitchUser && room.players.get(id)) room.players.get(id).twitch = twitchUser;
 
-  log("WS", `👤 Player connected: "${name}" ID=${id} | Room: ${room.roomCode} | IP: ${ip}`);
+  log("WS", `👤 Player connected: "${name}" ID=${id} | Room: ${room.roomCode} | IP: ${ip}${twitchUser ? ` | twitch:${twitchUser.login}` : ""}`);
 
   const playerPc = room.pcPlayers.get(id) || 0;
   room.pcPlayers.set(id, playerPc + 1);
@@ -2980,6 +3547,11 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip) {
     room.pcPlayers.set(pid, pc + 1);
     log("WS", `📤 -> PLAYER ${pid} client/connected`, connectedResult);
     try { p.socket.send(JSON.stringify({ pc, opcode: "client/connected", result: connectedResult })); } catch {}
+  }
+
+  for (const mod of room.moderators.values()) {
+    if (!mod.socket) continue;
+    try { mod.socket.send(JSON.stringify({ pc: 0, opcode: "client/connected", result: connectedResult })); } catch {}
   }
 
   socket.on("message", (data) => {
@@ -3066,12 +3638,16 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip) {
         room.pcPlayers.set(pid, pc + 1);
         try { p.socket.send(JSON.stringify({ pc, opcode: "client/disconnected", result: disconnected })); } catch {}
       }
+      for (const mod of room.moderators.values()) {
+        if (!mod.socket) continue;
+        try { mod.socket.send(JSON.stringify({ pc: 0, opcode: "client/disconnected", result: disconnected })); } catch {}
+      }
       const t = setTimeout(() => {
         room.disconnectedPlayers.delete(name);
         room.disconnectedTimers.delete(name);
         room.pcPlayers.delete(id);
       }, 30_000);
-      room.disconnectedPlayers.set(name, { id, name, secret: active.secret });
+      room.disconnectedPlayers.set(name, { id, name, secret: active.secret, ip: active.ip });
       room.disconnectedTimers.set(name, t);
     }
   });
@@ -3140,6 +3716,34 @@ function handlePlayerObject(room, id, socket, msg, flags) {
       log("WS", `❌ Failed to send to host: ${err.message}`);
     }
   }
+
+  if (MODERATION_TAGS.has(room.appTag)) {
+    const mtype = isText ? "text" : (isDoodle ? "doodle" : null);
+    if (mtype) {
+      const mkey = `moderate:${mtype}:${key}`;
+      const pname = (room.players.get(id) || {}).name || `Player ${id}`;
+      let mvalue;
+      if (isText) {
+        mvalue = String(val == null ? "" : val);
+      } else {
+        const dop = room.objects.get(key) || {};
+        mvalue = { doodle: { key, lines: dop.lines || [], colors: dop.colors || [], weights: dop.weights || [], size: dop.size || {}, live: false, maxLayer: dop.maxLayer || 0, maxPoints: dop.maxPoints || 0 } };
+      }
+      const mval = { status: "pending", name: pname, value: mvalue, context: "" };
+      room.objects.set(mkey, mval);
+      room.types.set(mkey, "object");
+      room.versions.set(mkey, (room.versions.get(mkey) || 0) + 1);
+      room.fromMap.set(mkey, id);
+      room.locks.set(mkey, false);
+      room.acls.set(mkey, ["role:moderator"]);
+      const mresult = { key: mkey, val: mval, version: room.versions.get(mkey), from: id };
+      for (const mod of room.moderators.values()) {
+        if (!mod.socket) continue;
+        try { mod.socket.send(JSON.stringify({ pc: 0, opcode: "object", result: mresult })); } catch {}
+      }
+      log("MODERATION", `🧹 ${mtype} "${key}" от ${pname} → очередь модерации`);
+    }
+  }
 }
 
 function onModeratorConnect(room, socket, modName, ip) {
@@ -3175,9 +3779,56 @@ function onModeratorConnect(room, socket, modName, ip) {
     log("WS_MODERATOR_MSG", `📨 MODERATOR "${name}" → opcode: ${opcode}`, msg.params || {});
     
     try {
-    if (msg.opcode === "room/settings") {
+    const mop = msg.opcode || "";
+    if (mop === "room/settings") {
       applyRoomSettings(room, msg.params);
       if (room.host) try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "room/settings", result: msg.params })); } catch {}
+    } else if (mop === "object/update" || mop === "object/set") {
+      const key = msg.params && msg.params.key;
+      if (key && String(key).startsWith("moderate:") && room.objects.has(key)) {
+        room.objects.set(key, msg.params.val);
+        room.versions.set(key, (room.versions.get(key) || 0) + 1);
+        const upd = { key, val: msg.params.val, version: room.versions.get(key), from: 1 };
+        for (const mod of room.moderators.values()) {
+          if (mod.socket === socket || !mod.socket) continue;
+          try { mod.socket.send(JSON.stringify({ pc: 0, opcode: "object", result: upd })); } catch {}
+        }
+        log("MODERATION", `✅ ${key} → ${(msg.params.val || {}).status}`);
+      }
+    } else if (mop === "client/send") {
+      if (room.host) try {
+        room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "client/send", result: { ...msg.params, from: id, userID: `00000000-0000-0000-0000-00000000000${id}` } }));
+      } catch {}
+    } else if (mop === "client/kick") {
+      const pid = parseInt(msg.params && msg.params.id);
+      const banned = !!(msg.params && msg.params.ban);
+      const reason = (msg.params && msg.params.reason) || "";
+      const pl = room.players.get(pid);
+      const kicked = { id: pid, banned, reason };
+      if (pl && pl.socket) {
+        try { pl.socket.send(JSON.stringify({ pc: 0, opcode: "client/kicked", result: kicked })); } catch {}
+        try { pl.socket.terminate(); } catch {}
+      }
+      if (room.host) try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "client/kicked", result: kicked })); } catch {}
+      for (const [opid, p] of room.players) {
+        if (opid === pid || !p.socket) continue;
+        try { p.socket.send(JSON.stringify({ pc: room.pcPlayers.get(opid) || 0, opcode: "client/kicked", result: kicked })); } catch {}
+      }
+      for (const mod of room.moderators.values()) {
+        if (mod.socket === socket || !mod.socket) continue;
+        try { mod.socket.send(JSON.stringify({ pc: 0, opcode: "client/kicked", result: kicked })); } catch {}
+      }
+      if (pl) { room.players.delete(pid); room.disconnectedPlayers.delete(pl.name); }
+      log("MODERATION", `🥾 Модератор кикнул игрока ${pid}`);
+    } else if (/^(doodle|text|object|number)\/get$/.test(mop)) {
+      const key = msg.params && msg.params.key;
+      const val = room.objects.get(key);
+      if (mop.startsWith("doodle/")) {
+        socket.send(JSON.stringify({ pc: 0, re: msg.seq, opcode: "ok", result: { key, lines: (val && val.lines) || [] } }));
+        return;
+      }
+      socket.send(JSON.stringify({ pc: 0, re: msg.seq, opcode: "ok", result: { key, val: val } }));
+      return;
     }
     socket.send(JSON.stringify({ pc: 0, re: msg.seq, opcode: "ok", result: {} }));
     } catch (err) {
@@ -3191,13 +3842,13 @@ function onModeratorConnect(room, socket, modName, ip) {
   });
 }
 
-function onAudienceConnect(room, socket, audienceName, ip) {
+function onAudienceConnect(room, socket, audienceName, ip, force) {
   const totalPlayers = room.players.size + room.disconnectedPlayers.size;
   const isFull = totalPlayers >= room.maxPlayers;
   const gameStarted = room.locked || room.gameStarted;
   const canJoin = room.audienceEnabled || isFull || gameStarted;
 
-  if (!canJoin) return socket.terminate();
+  if (!canJoin && !force) return socket.terminate();
 
   const name = (audienceName || `AUDIENCE_${room.nextAudienceId}`).trim();
   const id = 4000000000 + room.nextAudienceId++;
