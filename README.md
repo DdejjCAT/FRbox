@@ -339,10 +339,10 @@ MIT — см. [LICENSE](LICENSE).
 
 Также сервер сильно вдохновлён и использует части кода таких серверов, как:
 
-FRbox (первой версии)
-klucva
-https://github.com/InvoxiPlayGames/johnbox
-https://github.com/StratusFearMe21/jonahbox
+- FRbox (первой версии)
+- klucva
+- https://github.com/InvoxiPlayGames/johnbox
+- https://github.com/StratusFearMe21/jonahbox
 
 ---
 
