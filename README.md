@@ -322,8 +322,8 @@ MIT — см. [LICENSE](LICENSE).
 
 ## Связь и сообщество
 
-- Связь: t.me/error_kill (TG/DS)
-- Все обновления и логи создания сервера можно видеть в чате русского комьюнити Jackbox: t.me/Jackbox_Pack_Chat
+- Связь: https://t.me/error_kill (TG/DS)
+- Все обновления и логи создания сервера можно видеть в чате русского комьюнити Jackbox: https://t.me/Jackbox_Pack_Chat
 
 ---
 
@@ -336,6 +336,13 @@ MIT — см. [LICENSE](LICENSE).
 - https://t.me/Loamfy
 - https://t.me/sssssggggg1234
 - https://t.me/FfGior — за вдохновение
+
+Также сервер сильно вдохновлён и использует части кода таких серверов, как:
+
+FRbox (первой версии)
+klucva
+https://github.com/InvoxiPlayGames/johnbox
+https://github.com/StratusFearMe21/jonahbox
 
 ---
 
