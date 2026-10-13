@@ -29,7 +29,9 @@ https://jpp.nevpn2.fenst4r.live
 - Jackbox Party Pack 2
 - Jackbox Party Pack 3
 - Jackbox Party Pack 4
-- Jackbox Party Pack 5 (**ТОЛЬКО** Город злых рифм)
+- Jackbox Party Pack 5
+
+*(список временный: потом дополним или уберём)*
 
 ## Возможности
 

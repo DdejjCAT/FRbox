@@ -1051,9 +1051,100 @@ function createRoom(appId, appTag, maxPlayers, roomCode, userId) {
     objects: new Map(), versions: new Map(), fromMap: new Map(),
     restrictions: new Map(), locks: new Map(), types: new Map(), acls: new Map(),
     pcHost: 2, pcPlayers: new Map(),
+    gameEndTimer: null, gameFinished: false,
     created: Date.now(), owner: null, creatorIP: null
   };
   return room;
+}
+
+// ======================= GAME END / NEW GAME KICK ==========================
+// На этом сервере «новая игра» в той же комнате не поддерживается:
+// после окончания раунда всех игроков кикаем, комната закрывается.
+// Новые подключения (в т.ч. Play again / Same players) тоже кикаются.
+const GAME_END_GRACE_MS = 8 * 1000;
+
+function isGameEndState(state) {
+  return state === "EndGame" || state === "Gameplay_EndGame";
+}
+
+function isGameActiveState(state) {
+  if (typeof state !== "string" || isGameEndState(state)) return false;
+  return /Gameplay|Logo|CategorySelection|EnterText|EnterLie|ChooseLie|ChooseLike|LyingDone|EndShortie|Round|Countdown/.test(state);
+}
+
+function kickPayload(msg) {
+  return JSON.stringify({
+    pc: 0,
+    opcode: "error",
+    result: { code: 2016, msg: msg || "New game is not supported here. Create a new room." }
+  });
+}
+
+function kickSocket(socket, msg) {
+  if (!socket) return;
+  try { socket.send(kickPayload(msg)); } catch {}
+  try { socket.send(JSON.stringify({ pc: 0, opcode: "room/exit", result: { cause: "room-destroyed" } })); } catch {}
+  try { socket.close(); } catch {}
+}
+
+function kickRoomClients(room, msg) {
+  const text = msg || "Game over — new game is not supported. Create a new room.";
+  if (room.players) for (const p of room.players.values()) kickSocket(p.socket, text);
+  if (room.moderators) for (const m of room.moderators.values()) kickSocket(m.socket, text);
+  if (room.audience) for (const a of room.audience.values()) kickSocket(a.socket, text);
+  if (room.host) {
+    try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "room/exit", result: { cause: "room-destroyed" } })); } catch {}
+    try { room.host.close(); } catch {}
+    room.host = null;
+  }
+}
+
+function destroyFinishedRoom(room) {
+  room.gameEndTimer = null;
+  room.gameFinished = true;
+  const code = room.roomCode || room.code;
+  if (!code) return;
+  if (rooms.get(code) !== room) return;
+  log("ROOM", `🏁 Game ended in ${code}; closing room and kicking clients (no new game)`);
+  kickRoomClients(room, "Game over — create a new room for a new game.");
+  room.disconnectedTimers.forEach?.((t) => clearTimeout(t));
+  rooms.delete(code);
+}
+
+function cancelGameEndTimer(room) {
+  if (room && room.gameEndTimer) {
+    clearTimeout(room.gameEndTimer);
+    room.gameEndTimer = null;
+  }
+}
+
+function evaluateGameEnd(room, val) {
+  let data = val;
+  if (typeof data === "string") {
+    try { data = JSON.parse(data); } catch { return; }
+  }
+  if (!data || typeof data !== "object") return;
+  if (data.gameFinished === undefined && data.lobbyState === undefined && data.state === undefined) return;
+  const finished = data.gameFinished === true || data.lobbyState === "PostGame" || isGameEndState(data.state);
+  const active = isGameActiveState(data.state) || data.lobbyState === "Countdown";
+  if (finished) {
+    if (room.gameFinished) return;
+    room.gameFinished = true;
+    log("ROOM", `🏁 Game finished in ${room.roomCode} (state=${data.state ?? data.lobbyState}); kicking players — new game not supported`);
+    kickRoomClients(room, "This room is finished — new game is not supported here. Create a new room.");
+    if (!room.gameEndTimer) {
+      room.gameEndTimer = setTimeout(() => destroyFinishedRoom(room), GAME_END_GRACE_MS);
+    }
+  } else if (active && room.gameFinished && !room.gameEndTimer) {
+    // хост пытается начать заново в той же комнате — кикаем
+    log("ROOM", `🚫 New game attempt in finished room ${room.roomCode}; kicking`);
+    kickRoomClients(room, "New game in the same room is not supported. Create a new room.");
+    room.gameEndTimer = setTimeout(() => destroyFinishedRoom(room), 1000);
+  } else if (active && room.gameEndTimer) {
+    clearTimeout(room.gameEndTimer);
+    room.gameEndTimer = null;
+    log("ROOM", `▶️ New game started in ${room.roomCode}; cancelled auto-close`);
+  }
 }
 
 // ======================= PROXY LOG ===================
@@ -3665,6 +3756,8 @@ function isKnownPlayerReconnect(room, query, ip) {
 
 function onHostConnect(room, socket, ip) {
   log("WS", `🎮 HOST connected to ${room.roomCode} | IP: ${ip}`);
+  cancelGameEndTimer(room);
+  room.gameFinished = false;
   
   room.host = socket;
   room.players.clear(); room.moderators.clear();
@@ -3782,6 +3875,13 @@ function onHostConnect(room, socket, ip) {
 
       case "text/filter":
       case "game/start":
+        if (opcode === "game/start" && room.gameFinished) {
+          log("WS", `🚫 Host game/start in finished room ${room.roomCode} — kick clients (new game not supported)`);
+          kickRoomClients(room, "New game in the same room is not supported. Create a new room.");
+          room.gameEndTimer = setTimeout(() => destroyFinishedRoom(room), 500);
+          try { socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "error", result: { code: 2016, msg: "new game not supported in this room" } })); } catch {}
+          break;
+        }
         log("WS", `ℹ️ Host ${opcode} (ignored)`);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
         break;
@@ -3878,6 +3978,8 @@ function handleHostObject(room, socket, msg, flags) {
   }
   room.fromMap.set(key, 1);
   room.types.set(key, opcode);
+
+  if (isObject && key === "room") evaluateGameEnd(room, val);
   
   if (isNumber) {
     const restrictions = {};
@@ -3943,6 +4045,11 @@ function findPlayerByName(room, name) {
 }
 
 function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, twitchUser) {
+  if (room.gameFinished) {
+    log("WS", `🚫 New player "${playerName}" joined finished room ${room.roomCode} — kick (new game not supported)`);
+    kickSocket(socket, "This room is finished — new game is not supported. Create a new room.");
+    return;
+  }
   const name = (playerName || `PLAYER${room.nextPlayerId}`).trim();
 
   // Ник уже занят с другого IP -> отправляем в зрители, а не отдаём профиль игрока.
@@ -4363,6 +4470,11 @@ function onModeratorConnect(room, socket, modName, ip) {
 }
 
 function onAudienceConnect(room, socket, audienceName, ip, force) {
+  if (room.gameFinished) {
+    log("WS", `🚫 New audience "${audienceName}" joined finished room ${room.roomCode} — kick`);
+    kickSocket(socket, "This room is finished — new game is not supported. Create a new room.");
+    return;
+  }
   const totalPlayers = room.players.size + room.disconnectedPlayers.size;
   const isFull = totalPlayers >= room.maxPlayers;
   const gameStarted = room.locked || room.gameStarted;
