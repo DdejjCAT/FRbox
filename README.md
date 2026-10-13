@@ -21,11 +21,22 @@ https://jpp.nevpn2.fenst4r.live
 В Trivia Murder Party 3 нужно изменить сервер через HxD
  https://mh-nexus.de/en/hxd/
 
+### Проверено на данный момент
+
+- Trivia Murder Party 3
+- Drawful 2
+- Jackbox Party Pack 1
+- Jackbox Party Pack 2
+- Jackbox Party Pack 3
+- Jackbox Party Pack 4
+- Jackbox Party Pack 5 (**ТОЛЬКО** Город злых рифм)
+
 ## Возможности
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
 - WebSocket-мост **Ecast ↔ Blobcast** (старые пакеты через Socket.IO v1).
 - Обход гео-блокировок через **Xray** (socks5 на `127.0.0.1`).
+- **TTS для «Города злых рифм» (Rap Battle)**: генерация речи через ecast/локальный движок, с кэшем mp3 и раздачей с своего домена.
 - Веб-дашборд, регистрация/вход, управление комнатами, банами и IP.
 - Защита от брутфорса и DDoS, бан-лист IP.
 
@@ -89,9 +100,36 @@ npm start
 
   "internalToken": "CHANGE_ME",        // токен для админ-API (заголовок x-internal-token)
 
+  "panel": {
+    "registrationEnabled": false,      // открытая регистрация в панели (по умолчанию выкл)
+    "adminLogins": ["fenst4r", "loamfy"] // логины с полными правами (любые комнаты/админка)
+  },
+
   "mitm": {
     "enabled": false,                  // режим зеркала официального сервера
     "mirrorUrl": "https://ecast-qa.jackboxgames.com"
+  },
+
+  "tts": {                             // TTS (Город злых рифм / Rap Battle)
+    "mode": "proxy-mp3",               // см. таблицу режимов ниже
+    "upstream": "ecast",               // для proxy-mp3: ecast | mirror
+    "ffmpeg": "ffmpeg",
+    "cacheDir": "./data/tts-cache",
+    "baseWpm": 160,
+    "voices": {                        // маппинг Polly-голосов для espeak
+      "maxim":   { "lang": "ru", "pitch": 30 },
+      "tatyana": { "lang": "ru", "pitch": 60 }
+    },
+    "espeak":  { "bin": "espeak-ng" },
+    "piper":   { "bin": "", "model": "", "speaker": 0 },
+    "cloud": {
+      "yandex":     { "apiKey": "", "folderId": "", "voice": "zahar" },
+      "polly":      { "accessKeyId": "", "secretAccessKey": "", "region": "us-east-1" },
+      "azure":      { "key": "", "region": "russiacentral" },
+      "google":     { "apiKey": "", "voice": "ru-RU-Wavenet-C" },
+      "openai":     { "apiKey": "", "model": "tts-1", "voice": "onyx" },
+      "elevenlabs": { "apiKey": "", "voiceId": "" }
+    }
   },
 
   "xrayBin": "./xray-bin/xray",        // путь к бинарнику Xray
@@ -117,6 +155,13 @@ npm start
 | `host` | Публичный домен. Отдаётся в `GET /room` (`server`) и в ответах создания комнат. |
 | `internalToken` | Секрет для админ-эндпоинтов `/admin/*` (`x-internal-token`). **Обязательно смените.** |
 | `mitm.*` | Зеркалирование официального сервера (для отладки). Оставьте `enabled: false`. |
+| `panel.registrationEnabled` | `false` — регистрация в панели закрыта (по умолчанию). |
+| `panel.adminLogins` | Логины с полными правами: любые комнаты + глобальная админка. |
+| `tts.mode` | Активный TTS-движок (см. раздел TTS). |
+| `tts.upstream` | Апстрим для `proxy-mp3`: `ecast` или `mirror`. |
+| `tts.cacheDir` | Каталог кэша mp3. |
+| `tts.cloud.*` | API-ключи облачных TTS (Yandex/Polly/Azure/Google/OpenAI/ElevenLabs). |
+| `tts.espeak` / `tts.piper` | Пути к локальным движкам. |
 | `xrayBin` | Путь к бинарнику Xray. |
 | `xrayLocalPort` | Локальный SOCKS5-порт Xray. |
 | `xraySubscription` | URL подписки. Если задан — сервер сам скачает и распарсит серверы. |
@@ -166,6 +211,77 @@ npm start
 
 ---
 
+## TTS (Город злых рифм / Rap Battle)
+
+В «Городе злых рифм» (Rap Battle) хост-клиент при отправке куплетов сам шлёт
+`POST /tts/generate` (Polly, голоса `Maxim`/`Tatyana`) и затем скачивает mp3 по
+выданному URL. Официальный ecast отдаёт ссылку на Amazon S3
+(`jbg-polly.s3.amazonaws.com`) — если хост в регионе, где S3 недоступен/медленный,
+голос не воспроизводится, хотя генерация проходит успешно.
+
+Любой движок переключается одной строкой в `config.tts.mode` или на лету
+`POST /admin/tts {"mode":"..."}` без рестарта.
+
+### Режимы
+
+| mode | Движок | Тип | Ключи |
+|------|--------|-----|-------|
+| `upstream` | ecast Jackbox (Polly) | транзит, mp3 на S3 клиента | — |
+| `mirror` | ecast-qa | транзит, test-S3 | — |
+| `proxy-mp3` | ecast/mirror, но mp3 качает наш сервер | кэш `/tts/files/` | — |
+| `espeak` | espeak-ng (оффлайн) | кэш `/tts/files/` | нет |
+| `piper` | Piper neural (оффлайн) | кэш `/tts/files/` | `tts.piper.bin`+`model` |
+| `yandex` | Yandex SpeechKit | кэш | `tts.cloud.yandex.apiKey` |
+| `polly` | Amazon Polly | кэш | `accessKeyId`+`secretAccessKey` |
+| `azure` | Azure Cognitive TTS | кэш | `tts.cloud.azure.key` |
+| `google` | Google Cloud TTS | кэш | `tts.cloud.google.apiKey` |
+| `openai` | OpenAI TTS | кэш | `tts.cloud.openai.apiKey` |
+| `elevenlabs` | ElevenLabs | кэш | `tts.cloud.elevenlabs.apiKey` |
+
+Рекомендуемый дефолт — `proxy-mp3` (оригинальные голоса Polly без S3 у хоста).
+`espeak` — оффлайн-фолбэк без ключей. Облачные движки дают лучшее качество русской речи.
+
+Зависимости локальных режимов:
+
+```bash
+apt install espeak-ng ffmpeg          # espeak
+# piper: положить бинарник piper и ru-модель .onnx, указать пути в config
+```
+
+Скорость из поля `rate` запроса (`"120%"` = ×1.2) переносится на каждый движок
+(espeak: WPM, piper: length_scale, облако: speakingRate/speed/prosody).
+
+### Эндпоинты
+
+| Метод | Путь | Назначение |
+|-------|------|-----------|
+| POST | `/tts/generate` | генерация (то, что шлёт хост); тело как у ecast |
+| GET | `/tts/files/:file` | раздача mp3 из кэша |
+| GET | `/tts/status` | mode + готовность всех движков |
+| POST | `/admin/tts` | смена режима/ключей на лету (`x-internal-token`) |
+
+```bash
+# переключиться на Yandex SpeechKit
+curl -X POST https://jack.example.com/admin/tts \
+  -H "x-internal-token: <internalToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"yandex","cloud":{"yandex":{"apiKey":"...","folderId":"..."}}}'
+
+# вернуть официальный Polly через наш кэш
+curl -X POST https://jack.example.com/admin/tts \
+  -H "x-internal-token: <internalToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"proxy-mp3"}'
+```
+
+Ответ совместим с официальным ecast:
+
+```json
+{ "success": true, "url": "https://jack.example.com/tts/files/<sha1>.mp3" }
+```
+
+---
+
 ## Запуск как сервис (pm2)
 
 ```bash
@@ -178,7 +294,7 @@ pm2 logs frbox       # логи
 ```
 
 Сервер печатает в лог запросы по тегам `[ARCADE]`, `[BINJPIPE]`, `[MIXPANEL]`,
-`[WS]`, `[ROOM]`, `[XRAY]` — удобно для диагностики.
+`[WS]`, `[ROOM]`, `[XRAY]`, `[TTS]` — удобно для диагностики.
 
 ---
 
@@ -270,21 +386,34 @@ systemctl restart nginx
 - `/dashboard.html` — панель управления,
 - `/room` — просмотр комнаты.
 
+### Панель: регистрация и права
+
+- По умолчанию **регистрация закрыта** (`panel.registrationEnabled: false`).
+  Войти могут только уже созданные аккаунты (`data/users.json`).
+- `panel.adminLogins` — список логинов с **полными правами**: любые комнаты с любого IP,
+  глобальная админка (баны, статус, статистика). В шаблоне: `fenst4r`, `loamfy`.
+- Обычный пользователь видит и управляет **только комнатами, созданными с того же IP**,
+  что и его текущая сессия. Другой IP — 403 на любые действия с чужой комнатой
+  (включая claim/settings/delete/fake-player/info).
+- Админ-логины из списка могут зарегистрироваться даже при закрытой регистрации
+  (первичная выдача аккаунтов).
+
 Регистрация: `POST /auth/register` (`username` ≥ 3, `password` ≥ 4), вход — `POST /auth/login`.
-Данные пользователей хранятся в `data/users.json`, баны — в `data/bans.json`.
+Ответы login/register/me содержат `admin: true|false`.
 
 Админ-эндпоинты требуют заголовок `x-internal-token: <internalToken>`:
 
 | Метод | Путь | Назначение |
 |-------|------|-----------|
 | GET | `/admin/rooms` | список комнат |
-| GET | `/admin/stats` | статистика |
-| GET | `/admin/bans` | список забаненных IP |
-| POST | `/admin/ban-ip` | забанить IP |
-| POST | `/admin/security/ban` `/unban` | управление банами |
-| GET | `/admin/xray/status` | статус Xray |
+| GET | `/admin/stats` | статистика (только panel-admin) |
+| GET | `/admin/bans` | список забаненных IP (panel-admin) |
+| POST | `/admin/ban-ip` | забанить IP (panel-admin) |
+| POST | `/admin/security/ban` `/unban` | управление банами (panel-admin) |
+| GET | `/admin/xray/status` | статус Xray (panel-admin) |
 | GET | `/admin/proxy-log` | лог прокси |
 | GET/POST | `/admin/mitm` | режим зеркала |
+| GET/POST | `/admin/tts` | режим TTS (см. раздел TTS) |
 
 ---
 
@@ -311,6 +440,11 @@ systemctl restart nginx
 - **Нет связи с Xray** — проверьте `xrayBin`, порт `xrayLocalPort` и
   `GET /admin/xray/status`.
 - **Не грузятся игры** — проверьте доступность апстримов (`/arcade/...`) и `games.json`.
+- **В «Городе злых рифм» нет голоса (TTS)** — хосту не доходит mp3 с S3 Jackbox.
+  Переключите `config.tts.mode` на `proxy-mp3` (Polly, файл с вашего домена),
+  `espeak` (оффлайн) или облачный движок. `GET /tts/status` покажет готовность
+  всех режимов; тег `[TTS]` в логах. Для облачных режимов заполните
+  `tts.cloud.*` ключи.
 
 ---
 

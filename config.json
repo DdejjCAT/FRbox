@@ -2,9 +2,34 @@
   "port": 3489,
   "host": "jack.nevpn2.fenst4r.live",
   "internalToken": "REPLACETHIS",
+  "panel": {
+    "registrationEnabled": false,
+    "adminLogins": ["fenst4r", "loamfy"]
+  },
   "mitm": {
     "enabled": false,
     "mirrorUrl": "https://ecast-qa.jackboxgames.com"
+  },
+  "tts": {
+    "mode": "proxy-mp3",
+    "upstream": "ecast",
+    "ffmpeg": "ffmpeg",
+    "cacheDir": "./data/tts-cache",
+    "baseWpm": 160,
+    "voices": {
+      "maxim": { "lang": "ru", "pitch": 30 },
+      "tatyana": { "lang": "ru", "pitch": 60 }
+    },
+    "espeak": { "bin": "espeak-ng" },
+    "piper": { "bin": "", "model": "", "speaker": 0 },
+    "cloud": {
+      "yandex": { "apiKey": "", "folderId": "", "voice": "zahar", "lang": "ru-RU", "speed": 1.0 },
+      "polly": { "accessKeyId": "", "secretAccessKey": "", "region": "us-east-1", "voice": "Maxim" },
+      "azure": { "key": "", "region": "russiacentral", "voice": "ru-RU-DmitryNeural" },
+      "google": { "apiKey": "", "voice": "ru-RU-Wavenet-C" },
+      "openai": { "apiKey": "", "model": "tts-1", "voice": "onyx" },
+      "elevenlabs": { "apiKey": "", "voiceId": "", "model": "eleven_multilingual_v2" }
+    }
   },
   "xrayBin": "./xray-bin/xray",
   "xrayLocalPort": 10808,

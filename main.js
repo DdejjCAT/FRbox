@@ -35,6 +35,21 @@ const INTERNAL_TOKEN = CONFIG.internalToken || "debug-token";
 const PORT = CONFIG.port || 3489;
 const accessibleHost = CONFIG.host || "jack.fenst4r.live";
 
+// ======================= PANEL (регистрация + права) ==========================
+// registrationEnabled: false — панель без открытой регистрации
+// adminLogins — логины с полными правами (любые комнаты с любого IP)
+const PANEL = {
+  registrationEnabled: !(CONFIG.panel && CONFIG.panel.registrationEnabled === false),
+  adminLogins: new Set(
+    (Array.isArray(CONFIG.panel && CONFIG.panel.adminLogins) ? CONFIG.panel.adminLogins : [])
+      .map(x => String(x).toLowerCase())
+  )
+};
+log("PANEL", `🔐 registration=${PANEL.registrationEnabled ? "on" : "off"} admins=[${[...PANEL.adminLogins].join(", ") || "—"}]`);
+function isPanelAdmin(username) {
+  return PANEL.adminLogins.has(String(username || "").toLowerCase());
+}
+
 // ======================= TWITCH (требование входа) ===================
 const TWITCH = {
   clientId: String((CONFIG.twitch && CONFIG.twitch.clientId) || ""),
@@ -98,6 +113,458 @@ const MITM = {
 try { MITM.parsed = new URL(MITM.mirrorUrl); } catch { MITM.parsed = null; }
 
 function mitmActive() { return MITM.enabled && !!MITM.parsed; }
+
+// ======================= TTS ==========================
+// Любой mode можно переключить на лету: POST /admin/tts {"mode":"..."}
+// Режимы-генераторы (результат всегда success+url, mp3 кладётся в кэш /tts/files/):
+//   espeak       — локальный espeak-ng + ffmpeg
+//   piper        — локальный Piper (нужны bin + model в tts.piper)
+//   yandex       — Yandex SpeechKit (tts.cloud.yandex.*)
+//   polly        — Amazon Polly (tts.cloud.polly.*, SigV4)
+//   azure        — Azure Cognitive TTS (tts.cloud.azure.*)
+//   google       — Google Cloud TTS (tts.cloud.google.*)
+//   openai       — OpenAI TTS (tts.cloud.openai.*)
+//   elevenlabs   — ElevenLabs (tts.cloud.elevenlabs.*)
+// Режимы-транзит (mp3 остаётся на стороне Jackbox):
+//   upstream     — ecast.jackboxgames.com, клиент качает S3 сам
+//   mirror       — ecast-qa, клиент качает test-S3 сам
+//   proxy-mp3    — генерация upstream/mirror, но mp3 качает наш сервер → /tts/files/
+const TTS_ENGINES = new Set([
+  "upstream", "mirror", "proxy-mp3",
+  "espeak", "local", "piper",
+  "yandex", "polly", "azure", "google", "openai", "elevenlabs"
+]);
+const TTS_CLOUD_MODES = new Set(["yandex", "polly", "azure", "google", "openai", "elevenlabs"]);
+const TTS_LOCAL_MODES = new Set(["espeak", "local", "piper"]);
+const TTS = {
+  mode: String((CONFIG.tts && CONFIG.tts.mode) || "upstream").toLowerCase(),
+  upstream: String((CONFIG.tts && CONFIG.tts.upstream) || "ecast").toLowerCase(),
+  ffmpeg: String((CONFIG.tts && CONFIG.tts.ffmpeg) || "ffmpeg"),
+  cacheDir: String((CONFIG.tts && CONFIG.tts.cacheDir) || "./data/tts-cache"),
+  baseWpm: parseInt(CONFIG.tts && CONFIG.tts.baseWpm, 10) || 160,
+  voices: (CONFIG.tts && CONFIG.tts.voices) || {
+    maxim: { lang: "ru", pitch: 30 },
+    tatyana: { lang: "ru", pitch: 60 }
+  },
+  espeak: Object.assign({ bin: "espeak-ng" }, CONFIG.tts && CONFIG.tts.espeak),
+  piper: Object.assign({ bin: "", model: "", speaker: 0 }, CONFIG.tts && CONFIG.tts.piper),
+  cloud: Object.assign({}, CONFIG.tts && CONFIG.tts.cloud)
+};
+if (!TTS_ENGINES.has(TTS.mode)) {
+  log("TTS", `⚠️ Unknown tts.mode "${TTS.mode}", fallback to "upstream"`);
+  TTS.mode = "upstream";
+}
+try { fs.mkdirSync(TTS.cacheDir, { recursive: true }); } catch {}
+log("TTS", `🔊 mode=${TTS.mode} upstream=${TTS.upstream} cache=${TTS.cacheDir} engines=${[...TTS_ENGINES].join("|")}`);
+
+function ttsPublicBase() {
+  const proto = (accessibleHost.startsWith("localhost") || /^127\./.test(accessibleHost)) ? "http" : "https";
+  return `${proto}://${accessibleHost}`;
+}
+
+function ttsStripSsml(text) {
+  return String(text || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function ttsRatePct(rate) {
+  if (rate === null || rate === undefined || rate === "") return 100;
+  if (typeof rate === "number" && isFinite(rate)) return rate;
+  const m = String(rate).match(/(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : 100;
+}
+
+function ttsParseRateWpm(rate) {
+  const wpm = Math.round(TTS.baseWpm * (ttsRatePct(rate) / 100));
+  return Math.max(80, Math.min(450, wpm));
+}
+
+function ttsCacheName(engine, voice, rate, text) {
+  return crypto.createHash("sha1").update(`${engine}|${voice}|${rate}|${text}`).digest("hex") + ".mp3";
+}
+
+function ttsCloudCfg(name) {
+  return Object.assign({}, (TTS.cloud && TTS.cloud[name]) || {});
+}
+
+function runProc(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+    let out = "", err = "";
+    p.stdout.on("data", (d) => { out += d; });
+    p.stderr.on("data", (d) => { err += d; });
+    p.on("error", reject);
+    p.on("close", (code) => {
+      if (code === 0) resolve({ out, err });
+      else reject(new Error(`${cmd} exited ${code}: ${err.slice(0, 400)}`));
+    });
+  });
+}
+
+// Универсальный HTTP: возвращает { status, headers, buffer }
+function ttsHttp(url, { method = "GET", headers = {}, body = null, timeout = 30000, agent = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const isHttps = parsed.protocol === "https:";
+    const mod = isHttps ? https : http;
+    const payload = body == null ? null : (Buffer.isBuffer(body) || typeof body === "string" ? body : JSON.stringify(body));
+    const hdrs = Object.assign({ host: parsed.host }, headers);
+    if (payload && !hdrs["content-length"] && !hdrs["Content-Length"]) hdrs["content-length"] = Buffer.byteLength(payload);
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method, headers: hdrs,
+      rejectUnauthorized: false, servername: parsed.hostname
+    };
+    if (agent) options.agent = agent;
+    const req = mod.request(options, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        ttsHttp(new URL(res.headers.location, url).toString(), { method, headers, body: payload, timeout, agent }).then(resolve, reject);
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      res.on("data", (c) => { chunks.push(c); size += c.length; if (size > 30 * 1024 * 1024) req.destroy(new Error("too big")); });
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, buffer: Buffer.concat(chunks) }));
+    });
+    req.setTimeout(timeout, () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function ttsHttpJson(url, opts = {}) {
+  const res = await ttsHttp(url, opts);
+  const raw = res.buffer.toString("utf8");
+  if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 250)}`);
+  try { return JSON.parse(raw); } catch { throw new Error(`bad json: ${raw.slice(0, 250)}`); }
+}
+
+function ttsStoreMp3(buf, engine, voice, rate, text) {
+  if (!buf || !buf.length) throw new Error("empty audio");
+  const name = ttsCacheName(engine, voice, rate, text);
+  const mp3Path = `${TTS.cacheDir}/${name}`;
+  if (!(fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 0)) fs.writeFileSync(mp3Path, buf);
+  return `${ttsPublicBase()}/tts/files/${name}`;
+}
+
+async function ttsMaybeViaXray(fn) {
+  try { return await fn(null); } catch (errDirect) {
+    if (xrayManager && xrayManager.isRunning) {
+      const agent = await xrayManager.getAgent();
+      if (agent) return await fn(agent);
+    }
+    throw errDirect;
+  }
+}
+
+// ---- upstream / mirror / proxy-mp3 ----
+async function ttsEcastGenerate(body, which) {
+  const base = which === "mirror" ? MITM.mirrorUrl : "https://ecast.jackboxgames.com";
+  return ttsMaybeViaXray((agent) => ttsHttpJson(`${base}/tts/generate`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "user-agent": "JackboxGames/1.00 libcurl/7.57.0-DEV OpenSSL/1.1.1g zlib/1.2.7 (Win-Steam)"
+    },
+    body, agent
+  }));
+}
+
+async function engineUpstream(body) { return ttsEcastGenerate(body, "ecast"); }
+async function engineMirror(body) { return ttsEcastGenerate(body, "mirror"); }
+
+async function engineProxyMp3(body) {
+  const which = TTS.upstream === "mirror" ? "mirror" : "ecast";
+  const gen = await ttsEcastGenerate(body, which);
+  if (!gen || !gen.success || !gen.url) throw new Error(`generate failed: ${JSON.stringify(gen).slice(0, 200)}`);
+  const name = ttsCacheName(which, body.voice || "", body.rate || "", ttsStripSsml(body.text));
+  const mp3Path = `${TTS.cacheDir}/${name}`;
+  if (!(fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 0)) {
+    const buf = await ttsMaybeViaXray((agent) => ttsHttp(gen.url, { agent }).then(r => {
+      if (r.status !== 200) throw new Error(`download ${r.status}`);
+      return r.buffer;
+    }));
+    fs.writeFileSync(mp3Path, buf);
+  }
+  return { success: true, url: `${ttsPublicBase()}/tts/files/${name}`, sourceUrl: gen.url };
+}
+
+// ---- espeak-ng ----
+async function engineEspeak(body) {
+  const text = ttsStripSsml(body.text);
+  if (!text) throw new Error("empty text");
+  const key = String(body.voice || "Maxim").toLowerCase();
+  const v = TTS.voices[key] || TTS.voices.maxim || { lang: "ru", pitch: 30 };
+  const wpm = ttsParseRateWpm(body.rate);
+  const bin = TTS.espeak.bin || "espeak-ng";
+  const wavPath = `${TTS.cacheDir}/${ttsCacheName("espeak", body.voice, body.rate, text).replace(/\.mp3$/, ".wav")}`;
+  const mp3BufPath = wavPath.replace(/\.wav$/, ".mp3");
+  await runProc(bin, ["-v", v.lang || "ru", "-p", String(v.pitch || 30), "-s", String(wpm), "-w", wavPath, "--", text]);
+  try {
+    await runProc(TTS.ffmpeg, ["-y", "-hide_banner", "-loglevel", "error", "-i", wavPath, "-codec:a", "libmp3lame", "-qscale:a", "4", mp3BufPath]);
+  } finally {
+    try { fs.unlinkSync(wavPath); } catch {}
+  }
+  const buf = fs.readFileSync(mp3BufPath);
+  return { success: true, url: ttsStoreMp3(buf, "espeak", body.voice, body.rate, text) };
+}
+
+// ---- Piper (локальный нейро) ----
+async function enginePiper(body) {
+  const cfg = TTS.piper;
+  if (!cfg.bin || !cfg.model) throw new Error("piper not configured (tts.piper.bin + tts.piper.model)");
+  const text = ttsStripSsml(body.text);
+  if (!text) throw new Error("empty text");
+  const wavPath = `${TTS.cacheDir}/${ttsCacheName("piper", body.voice, body.rate, text).replace(/\.mp3$/, ".wav")}`;
+  // length_scale ~ 100/rate% (rate 120% → 0.83 быстрее)
+  const lengthScale = (100 / Math.max(10, ttsRatePct(body.rate))).toFixed(3);
+  // piper читает текст из stdin
+  return await new Promise((resolve, reject) => {
+    const p = spawn(cfg.bin, ["--model", cfg.model, "--output_file", wavPath, "--length_scale", lengthScale, "--speaker", String(cfg.speaker || 0)]);
+    let err = "";
+    p.stderr.on("data", d => { err += d; });
+    p.on("error", reject);
+    p.on("close", async (code) => {
+      if (code !== 0) return reject(new Error(`piper exited ${code}: ${err.slice(0, 300)}`));
+      try {
+        await runProc(TTS.ffmpeg, ["-y", "-hide_banner", "-loglevel", "error", "-i", wavPath, "-codec:a", "libmp3lame", "-qscale:a", "4", wavPath.replace(/\.wav$/, ".mp3")]);
+        const buf = fs.readFileSync(wavPath.replace(/\.wav$/, ".mp3"));
+        resolve({ success: true, url: ttsStoreMp3(buf, "piper", body.voice, body.rate, text) });
+      } catch (e) { reject(e); } finally {
+        try { fs.unlinkSync(wavPath); } catch {}
+      }
+    });
+    p.stdin.write(text);
+    p.stdin.end();
+  });
+}
+
+// ---- Yandex SpeechKit ----
+async function engineYandex(body) {
+  const cfg = ttsCloudCfg("yandex");
+  if (!cfg.apiKey && !cfg.iamToken) throw new Error("yandex not configured (tts.cloud.yandex.apiKey)");
+  const text = ttsStripSsml(body.text);
+  const pct = ttsRatePct(body.rate);
+  const form = new URLSearchParams({
+    text,
+    lang: cfg.lang || "ru-RU",
+    voice: cfg.voice || (String(body.voice).toLowerCase() === "tatyana" ? "alena" : "zahar"),
+    speed: String(cfg.speed || Math.max(0.3, Math.min(2.0, pct / 100))),
+    format: "mp3",
+    folderId: cfg.folderId || ""
+  });
+  const headers = {
+    "content-type": "application/x-www-form-urlencoded",
+    "user-agent": "FRbox-TTS/1.0"
+  };
+  if (cfg.iamToken) headers["Authorization"] = `Bearer ${cfg.iamToken}`;
+  else headers["Authorization"] = `Api-Key ${cfg.apiKey}`;
+  const res = await ttsMaybeViaXray((agent) => ttsHttp(
+    cfg.endpoint || "https://tts.api.cloud.yandex.net/speech/v1/tts/synthesize",
+    { method: "POST", headers, body: form.toString(), agent }
+  ));
+  if (res.status !== 200) throw new Error(`yandex ${res.status}: ${res.buffer.toString("utf8").slice(0, 200)}`);
+  return { success: true, url: ttsStoreMp3(res.buffer, "yandex", body.voice, body.rate, text) };
+}
+
+// ---- Amazon Polly (SigV4) ----
+function pollySign(key, secret, region, service, stringToSign) {
+  const kDate = crypto.createHmac("sha256", "AWS4" + secret).update(region).digest();
+  const kRegion = crypto.createHmac("sha256", kDate).update(region).digest();
+  const kService = crypto.createHmac("sha256", kRegion).update(service).digest();
+  const kSigning = crypto.createHmac("sha256", kService).update("aws4_request").digest();
+  return crypto.createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+}
+
+async function enginePolly(body) {
+  const cfg = ttsCloudCfg("polly");
+  if (!cfg.accessKeyId || !cfg.secretAccessKey) throw new Error("polly not configured (tts.cloud.polly.accessKeyId)");
+  const region = cfg.region || "us-east-1";
+  const text = ttsStripSsml(body.text);
+  const voiceMap = cfg.voices || { Maxim: "Maxim", Tatyana: "Tatyana" };
+  const voiceId = cfg.voice || voiceMap[body.voice] || body.voice || "Maxim";
+  const payload = JSON.stringify({
+    Text: text,
+    OutputFormat: "mp3",
+    VoiceId: voiceId,
+    Engine: cfg.engine || "standard",
+    SampleRate: cfg.sampleRate || "22050",
+    TextType: "text",
+    Rate: String(Math.max(20, Math.min(500, ttsRatePct(body.rate)))) + "%"
+  });
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = crypto.createHash("sha256").update(payload).digest("hex");
+  const host = cfg.endpoint || `polly.${region}.amazonaws.com`;
+  const canonicalHeaders = `content-type:application/json\nhost:${host}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = "content-type;host;x-amz-date";
+  const canonicalRequest = ["POST", "/", "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const scope = `${dateStamp}/${region}/polly/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, crypto.createHash("sha256").update(canonicalRequest).digest("hex")].join("\n");
+  const sig = pollySign(cfg.accessKeyId, cfg.secretAccessKey, region, "polly", stringToSign);
+  const res = await ttsMaybeViaXray((agent) => ttsHttp(`https://${host}/`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-amz-date": amzDate,
+      "authorization": `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${sig}`
+    },
+    body: payload, agent
+  }));
+  if (res.status !== 200) throw new Error(`polly ${res.status}: ${res.buffer.toString("utf8").slice(0, 200)}`);
+  return { success: true, url: ttsStoreMp3(res.buffer, "polly", body.voice, body.rate, text) };
+}
+
+// ---- Azure Cognitive TTS ----
+async function engineAzure(body) {
+  const cfg = ttsCloudCfg("azure");
+  if (!cfg.key) throw new Error("azure not configured (tts.cloud.azure.key)");
+  const text = ttsStripSsml(body.text);
+  const region = cfg.region || "russiacentral";
+  const voice = cfg.voice || (String(body.voice).toLowerCase() === "tatyana" ? "ru-RU-SvetlanaNeural" : "ru-RU-DmitryNeural");
+  const pct = ttsRatePct(body.rate);
+  const rateAttr = pct === 100 ? "" : ` rate="${pct > 100 ? "+" : ""}${Math.round(pct - 100)}%"`;
+  const ssml = `<speak version='1.0' xml:lang='ru-RU'><voice name='${voice}'><prosody${rateAttr}>${text.replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</prosody></voice></speak>`;
+  const res = await ttsMaybeViaXray((agent) => ttsHttp(
+    `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/ssml+xml",
+        "x-microsoft-outputformat": cfg.format || "audio-24khz-96kbitrate-mono-mp3",
+        "user-agent": "FRbox-TTS/1.0",
+        "Ocp-Apim-Subscription-Key": cfg.key
+      },
+      body: ssml, agent
+    }
+  ));
+  if (res.status !== 200) throw new Error(`azure ${res.status}: ${res.buffer.toString("utf8").slice(0, 200)}`);
+  return { success: true, url: ttsStoreMp3(res.buffer, "azure", body.voice, body.rate, text) };
+}
+
+// ---- Google Cloud TTS ----
+async function engineGoogle(body) {
+  const cfg = ttsCloudCfg("google");
+  if (!cfg.apiKey && !cfg.credentials) throw new Error("google not configured (tts.cloud.google.apiKey)");
+  const text = ttsStripSsml(body.text);
+  const pct = ttsRatePct(body.rate);
+  const voiceName = cfg.voice || (String(body.voice).toLowerCase() === "tatyana"
+    ? "ru-RU-Studio-O" : "ru-RU-Wavenet-C");
+  const payload = {
+    input: { text },
+    voice: { languageCode: cfg.lang || "ru-RU", name: voiceName },
+    audioConfig: { audioEncoding: "MP3", speakingRate: Math.max(0.25, Math.min(4, pct / 100)) }
+  };
+  let url = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(cfg.apiKey || "")}`;
+  let headers = { "content-type": "application/json" };
+  if (!cfg.apiKey && cfg.credentials && cfg.credentials.access_token) {
+    url = "https://texttospeech.googleapis.com/v1/text:synthesize";
+    headers["Authorization"] = `Bearer ${cfg.credentials.access_token}`;
+  }
+  const json = await ttsMaybeViaXray((agent) => ttsHttpJson(url, { method: "POST", headers, body: payload, agent }));
+  if (!json.audioContent) throw new Error("google: no audioContent");
+  return { success: true, url: ttsStoreMp3(Buffer.from(json.audioContent, "base64"), "google", body.voice, body.rate, text) };
+}
+
+// ---- OpenAI TTS ----
+async function engineOpenAI(body) {
+  const cfg = ttsCloudCfg("openai");
+  if (!cfg.apiKey) throw new Error("openai not configured (tts.cloud.openai.apiKey)");
+  const text = ttsStripSsml(body.text);
+  const pct = ttsRatePct(body.rate);
+  const res = await ttsMaybeViaXray((agent) => ttsHttp(cfg.endpoint || "https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${cfg.apiKey}`
+    },
+    body: {
+      model: cfg.model || "tts-1",
+      voice: cfg.voice || (String(body.voice).toLowerCase() === "tatyana" ? "nova" : "onyx"),
+      input: text,
+      response_format: "mp3",
+      speed: Math.max(0.25, Math.min(4, pct / 100))
+    },
+    agent
+  }));
+  if (res.status !== 200) throw new Error(`openai ${res.status}: ${res.buffer.toString("utf8").slice(0, 200)}`);
+  return { success: true, url: ttsStoreMp3(res.buffer, "openai", body.voice, body.rate, text) };
+}
+
+// ---- ElevenLabs ----
+async function engineElevenLabs(body) {
+  const cfg = ttsCloudCfg("elevenlabs");
+  if (!cfg.apiKey) throw new Error("elevenlabs not configured (tts.cloud.elevenlabs.apiKey)");
+  const text = ttsStripSsml(body.text);
+  const voiceId = cfg.voiceId || "21m00Tcm4TlvDq8ikWAM";
+  const pct = ttsRatePct(body.rate);
+  const res = await ttsMaybeViaXray((agent) => ttsHttp(
+    `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "xi-api-key": cfg.apiKey
+      },
+      body: {
+        text,
+        model_id: cfg.model || "eleven_multilingual_v2",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        speed: Math.max(0.5, Math.min(2, pct / 100))
+      },
+      agent
+    }
+  ));
+  if (res.status !== 200) throw new Error(`elevenlabs ${res.status}: ${res.buffer.toString("utf8").slice(0, 200)}`);
+  return { success: true, url: ttsStoreMp3(res.buffer, "elevenlabs", body.voice, body.rate, text) };
+}
+
+const TTS_HANDLERS = {
+  upstream: engineUpstream,
+  mirror: engineMirror,
+  "proxy-mp3": engineProxyMp3,
+  espeak: engineEspeak,
+  local: engineEspeak,
+  piper: enginePiper,
+  yandex: engineYandex,
+  polly: enginePolly,
+  azure: engineAzure,
+  google: engineGoogle,
+  openai: engineOpenAI,
+  elevenlabs: engineElevenLabs
+};
+
+function ttsModeReady(mode) {
+  try {
+    if (TTS_LOCAL_MODES.has(mode) && mode === "espeak") return !!TTS.espeak.bin;
+    if (mode === "piper") return !!(TTS.piper.bin && TTS.piper.model);
+    if (mode === "yandex") return !!(ttsCloudCfg("yandex").apiKey || ttsCloudCfg("yandex").iamToken);
+    if (mode === "polly") return !!(ttsCloudCfg("polly").accessKeyId && ttsCloudCfg("polly").secretAccessKey);
+    if (mode === "azure") return !!ttsCloudCfg("azure").key;
+    if (mode === "google") return !!(ttsCloudCfg("google").apiKey || ttsCloudCfg("google").credentials);
+    if (mode === "openai") return !!ttsCloudCfg("openai").apiKey;
+    if (mode === "elevenlabs") return !!ttsCloudCfg("elevenlabs").apiKey;
+    return true;
+  } catch { return false; }
+}
+
+async function ttsHandleGenerate(req, res) {
+  const body = req.body || {};
+  const text = ttsStripSsml(body.text).slice(0, 80);
+  log("TTS", `🔊 POST /tts/generate [${TTS.mode}]`, { mode: TTS.mode, voice: body.voice, rate: body.rate, text });
+  const handler = TTS_HANDLERS[TTS.mode] || TTS_HANDLERS.upstream;
+  try {
+    const result = await handler(body);
+    log("TTS", `✅ done → ${result && result.url}`);
+    res.status(201).json(result);
+  } catch (err) {
+    log("TTS", `❌ [${TTS.mode}] ${err.message}`);
+    if (!res.headersSent) res.status(502).json({ success: false, error: String(err.message || err), mode: TTS.mode });
+  }
+}
 
 function truncateBody(body, max = 4000) {
   if (body === null || body === undefined) return null;
@@ -1485,12 +1952,29 @@ function requireAuth(req, res, next) {
   const token = req.headers["authorization"]?.replace("Bearer ", "");
   if (!token || !sessions.has(token)) return res.status(401).json({ ok: false, error: "unauthorized" });
   const s = sessions.get(token);
-  req.user = s.username; req.userIP = s.ip;
+  req.user = s.username; req.userIP = s.ip; req.userAdmin = isPanelAdmin(s.username);
   next();
+}
+
+// Глобальные админ-действия (баны, статус безопасности) — только adminLogins
+function requirePanelAdmin(req, res, next) {
+  if (!req.userAdmin) return res.status(403).json({ ok: false, error: "admin only" });
+  next();
+}
+
+// Управление комнатой: админ — всё; обычный юзер — только если IP сессии == creatorIP
+function canControlRoom(req, room) {
+  if (!room) return false;
+  if (req.userAdmin) return true;
+  return !!room.creatorIP && room.creatorIP === req.userIP;
 }
 
 // ======================= AUTH ========================
 app.post("/auth/register", (req, res) => {
+  if (!PANEL.registrationEnabled && !isPanelAdmin(req.body?.username)) {
+    log("AUTH", `🚫 Registration disabled (ip=${getClientIP(req)})`);
+    return res.status(403).json({ ok: false, error: "registration disabled" });
+  }
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ ok: false, error: "missing credentials" });
   if (username.length < 3 || password.length < 4) return res.status(400).json({ ok: false, error: "username >= 3, password >= 4" });
@@ -1499,7 +1983,7 @@ app.post("/auth/register", (req, res) => {
   saveUsers();
   const token = generateSessionToken();
   sessions.set(token, { username, ip: getClientIP(req) });
-  res.json({ ok: true, body: { token, username } });
+  res.json({ ok: true, body: { token, username, admin: isPanelAdmin(username) } });
 });
 
 app.post("/auth/login", (req, res) => {
@@ -1522,8 +2006,8 @@ app.post("/auth/login", (req, res) => {
   failedLogins.delete(ip);
   const token = generateSessionToken();
   sessions.set(token, { username, ip });
-  log("AUTH", `✅ User logged in: ${username} from IP ${ip}`);
-  res.json({ ok: true, body: { token, username } });
+  log("AUTH", `✅ User logged in: ${username} from IP ${ip}${isPanelAdmin(username) ? " (admin)" : ""}`);
+  res.json({ ok: true, body: { token, username, admin: isPanelAdmin(username) } });
 });
 
 app.post("/auth/logout", requireAuth, (req, res) => {
@@ -1531,7 +2015,7 @@ app.post("/auth/logout", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/auth/me", requireAuth, (req, res) => res.json({ ok: true, body: { username: req.user } }));
+app.get("/auth/me", requireAuth, (req, res) => res.json({ ok: true, body: { username: req.user, admin: !!req.userAdmin, registrationEnabled: PANEL.registrationEnabled } }));
 
 app.post("/auth/change-password", requireAuth, (req, res) => {
   const { oldPassword, newPassword } = req.body;
@@ -1745,7 +2229,7 @@ app.patch("/api/v2/rooms/custom", requireAuth, (req, res) => {
   if (!oldIp || !newIp) return res.status(400).json({ ok: false, error: "oldIp and newIp required" });
   const prep = preparedRooms.get(oldIp);
   if (!prep) return res.status(404).json({ ok: false, error: "not found" });
-  if (prep.owner !== req.user) return res.status(403).json({ ok: false, error: "forbidden" });
+  if (!req.userAdmin && !(oldIp === req.userIP && prep.owner === req.user)) return res.status(403).json({ ok: false, error: "forbidden" });
   preparedRooms.delete(oldIp);
   preparedRooms.set(newIp, { ...prep, ip: newIp });
   log("ROOM", `IP changed: ${oldIp} -> ${newIp} by ${req.user}`);
@@ -1754,7 +2238,7 @@ app.patch("/api/v2/rooms/custom", requireAuth, (req, res) => {
 
 app.get("/api/v2/my-rooms", requireAuth, (req, res) => {
   const active = [...rooms.values()]
-    .filter(r => r.owner === req.user || r.creatorIP === req.userIP)
+    .filter(r => canControlRoom(req, r))
     .map(r => ({
       code: r.roomCode, appTag: r.appTag, appId: r.appId,
       players: r.players.size, maxPlayers: r.maxPlayers,
@@ -1769,15 +2253,17 @@ app.get("/api/v2/my-rooms", requireAuth, (req, res) => {
       created: r.created, status: "active"
     }));
   const prepared = [...preparedRooms.entries()]
-    .filter(([_, p]) => p.owner === req.user)
+    .filter(([ip, p]) => req.userAdmin || (ip === req.userIP && p.owner === req.user))
     .map(([ip, p]) => ({ code: p.code, ip, created: p.createdAt, status: "prepared", active: rooms.has(p.code) }));
   res.json({ ok: true, body: { active, prepared } });
 });
 
 app.delete("/api/v2/rooms/custom/:ip", requireAuth, (req, res) => {
-  const prep = preparedRooms.get(decodeURIComponent(req.params.ip));
-  if (!prep || prep.owner !== req.user) return res.status(404).json({ ok: false, error: "not found" });
-  preparedRooms.delete(decodeURIComponent(req.params.ip));
+  const key = decodeURIComponent(req.params.ip);
+  const prep = preparedRooms.get(key);
+  if (!prep) return res.status(404).json({ ok: false, error: "not found" });
+  if (!req.userAdmin && !(key === req.userIP && prep.owner === req.user)) return res.status(403).json({ ok: false, error: "forbidden" });
+  preparedRooms.delete(key);
   res.json({ ok: true });
 });
 
@@ -1785,7 +2271,7 @@ app.delete("/api/v2/rooms/:code", requireAuth, (req, res) => {
   const code = req.params.code.toUpperCase();
   const room = rooms.get(code);
   if (!room) return res.status(404).json({ ok: false, error: "not found" });
-  if (room.owner !== req.user && room.creatorIP !== req.userIP) return res.status(403).json({ ok: false, error: "forbidden" });
+  if (!canControlRoom(req, room)) return res.status(403).json({ ok: false, error: "forbidden" });
   if (room.host) try { room.host.terminate(); } catch {}
   for (const [, p] of room.players) if (p.socket) try { p.socket.terminate(); } catch {}
   for (const [, m] of room.moderators) if (m.socket) try { m.socket.terminate(); } catch {}
@@ -1825,8 +2311,8 @@ app.get("/api/v2/rooms/:code/info", (req, res) => {
   const token = req.headers.authorization.replace("Bearer ", "");
   const session = sessions.get(token);
   if (!session) return res.status(401).json({ ok: false, error: "unauthorized" });
-  req.user = session.username; req.userIP = session.ip;
-  if (room.owner !== req.user && room.creatorIP !== req.userIP) return res.status(403).json({ ok: false, error: "forbidden" });
+  req.user = session.username; req.userIP = session.ip; req.userAdmin = isPanelAdmin(session.username);
+  if (!canControlRoom(req, room)) return res.status(403).json({ ok: false, error: "forbidden" });
 
   res.json({
     ok: true,
@@ -1846,7 +2332,7 @@ app.get("/api/v2/rooms/:code/info", (req, res) => {
 app.post("/api/v2/rooms/:code/settings", requireAuth, (req, res) => {
   const room = rooms.get(req.params.code.toUpperCase());
   if (!room) return res.status(404).json({ ok: false, error: "not found" });
-  if (room.owner !== req.user && room.creatorIP !== req.userIP) return res.status(403).json({ ok: false, error: "forbidden" });
+  if (!canControlRoom(req, room)) return res.status(403).json({ ok: false, error: "forbidden" });
   applyRoomSettings(room, req.body);
   if (room.host) try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "room/settings", result: req.body })); } catch {}
   res.json({ ok: true });
@@ -1855,8 +2341,8 @@ app.post("/api/v2/rooms/:code/settings", requireAuth, (req, res) => {
 app.post("/api/v2/rooms/:code/claim", requireAuth, (req, res) => {
   const room = rooms.get(req.params.code.toUpperCase());
   if (!room) return res.status(404).json({ ok: false, error: "room not found" });
-  if (room.owner && room.owner !== req.user) return res.status(403).json({ ok: false, error: "room already owned" });
-  if (!room.owner && room.creatorIP !== req.userIP) return res.status(403).json({ ok: false, error: "only from creator IP" });
+  if (!req.userAdmin && room.creatorIP !== req.userIP) return res.status(403).json({ ok: false, error: "only from creator IP" });
+  if (room.owner && room.owner !== req.user && !req.userAdmin) return res.status(403).json({ ok: false, error: "room already owned" });
   room.owner = req.user;
   log("ROOM", `${req.user} claimed room ${room.roomCode}`);
   res.json({ ok: true, body: { code: room.roomCode, owner: req.user } });
@@ -1864,7 +2350,7 @@ app.post("/api/v2/rooms/:code/claim", requireAuth, (req, res) => {
 
 app.post("/api/v2/rooms/:code/fake-player", requireAuth, (req, res) => {
   const room = rooms.get(req.params.code.toUpperCase());
-  if (!room || (room.owner !== req.user && room.creatorIP !== req.userIP)) return res.status(404).json({ ok: false, error: "not found" });
+  if (!room || !canControlRoom(req, room)) return res.status(404).json({ ok: false, error: "not found" });
   const { name, count = 1 } = req.body;
   const added = [];
   for (let i = 0; i < count; i++) {
@@ -2159,7 +2645,7 @@ app.delete("/admin/rooms/:code", checkToken, (req, res) => {
   res.json({ success: true });
 });
 
-app.get("/admin/stats", requireAuth, (req, res) => {
+app.get("/admin/stats", requireAuth, requirePanelAdmin, (req, res) => {
   const memUsage = process.memoryUsage();
   let totalPlayers = 0, totalAudience = 0, roomsWithHost = 0;
   for (const r of rooms.values()) {
@@ -2183,7 +2669,7 @@ app.get("/admin/stats", requireAuth, (req, res) => {
   });
 });
 
-app.post("/admin/ban-ip", requireAuth, (req, res) => {
+app.post("/admin/ban-ip", requireAuth, requirePanelAdmin, (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ ok: false, error: "ip required" });
   bannedIPs.add(ip);
@@ -2193,7 +2679,7 @@ app.post("/admin/ban-ip", requireAuth, (req, res) => {
   res.json({ ok: true, banned: ip });
 });
 
-app.delete("/admin/ban-ip/:ip", requireAuth, (req, res) => {
+app.delete("/admin/ban-ip/:ip", requireAuth, requirePanelAdmin, (req, res) => {
   const ip = decodeURIComponent(req.params.ip);
   bannedIPs.delete(ip);
   bannedUntil.delete(ip);
@@ -2202,11 +2688,11 @@ app.delete("/admin/ban-ip/:ip", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/admin/bans", requireAuth, (req, res) => {
+app.get("/admin/bans", requireAuth, requirePanelAdmin, (req, res) => {
   res.json({ ok: true, body: [...bannedIPs] });
 });
 
-app.get("/admin/security/status", requireAuth, (req, res) => {
+app.get("/admin/security/status", requireAuth, requirePanelAdmin, (req, res) => {
   const now = Date.now();
   const activeBans = [];
   for (const [ip, until] of bannedUntil) {
@@ -2237,14 +2723,14 @@ app.get("/admin/security/status", requireAuth, (req, res) => {
   });
 });
 
-app.post("/admin/security/ban", requireAuth, (req, res) => {
+app.post("/admin/security/ban", requireAuth, requirePanelAdmin, (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ ok: false, error: "ip required" });
   banIP(ip, `manual ban by ${req.user}`);
   res.json({ ok: true });
 });
 
-app.post("/admin/security/unban", requireAuth, (req, res) => {
+app.post("/admin/security/unban", requireAuth, requirePanelAdmin, (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ ok: false, error: "ip required" });
   bannedUntil.delete(ip);
@@ -2254,7 +2740,7 @@ app.post("/admin/security/unban", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/admin/xray/status", requireAuth, (req, res) => {
+app.get("/admin/xray/status", requireAuth, requirePanelAdmin, (req, res) => {
   res.json({
     ok: true,
     body: {
@@ -2306,6 +2792,40 @@ app.post("/admin/mitm", checkToken, (req, res) => {
   }
   log("MITM", `🔄 Runtime: enabled=${MITM.enabled} mirrorUrl=${MITM.mirrorUrl}`);
   res.json({ ok: true, body: { enabled: MITM.enabled, mirrorUrl: MITM.mirrorUrl, active: mitmActive() } });
+});
+
+// ======================= TTS ROUTES ====================
+app.get("/tts/status", (req, res) => {
+  const engines = {};
+  for (const m of TTS_ENGINES) engines[m] = ttsModeReady(m);
+  res.json({ ok: true, body: { mode: TTS.mode, upstream: TTS.upstream, cacheDir: TTS.cacheDir, engines } });
+});
+
+app.post("/tts/generate", (req, res) => { ttsHandleGenerate(req, res); });
+
+app.get("/tts/files/:file", (req, res) => {
+  const file = String(req.params.file || "");
+  if (!/^[a-f0-9]{40}\.mp3$/.test(file)) return res.status(400).json({ error: "bad file" });
+  const p = `${TTS.cacheDir}/${file}`;
+  if (!fs.existsSync(p)) return res.status(404).json({ error: "not found" });
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  fs.createReadStream(p).pipe(res);
+});
+
+// runtime-переключение: POST /admin/tts {"mode":"yandex"|...} (x-internal-token)
+app.post("/admin/tts", checkToken, (req, res) => {
+  const b = req.body || {};
+  if (typeof b.mode === "string" && TTS_ENGINES.has(b.mode.toLowerCase())) TTS.mode = b.mode.toLowerCase();
+  if (typeof b.upstream === "string" && ["ecast", "mirror"].includes(b.upstream.toLowerCase())) TTS.upstream = b.upstream.toLowerCase();
+  if (b.cloud && typeof b.cloud === "object") {
+    for (const [k, v] of Object.entries(b.cloud)) {
+      if (v && typeof v === "object") TTS.cloud[k] = Object.assign({}, TTS.cloud[k] || {}, v);
+    }
+  }
+  log("TTS", `🔄 Runtime: mode=${TTS.mode} upstream=${TTS.upstream} ready=${ttsModeReady(TTS.mode)}`);
+  res.json({ ok: true, body: { mode: TTS.mode, upstream: TTS.upstream, ready: ttsModeReady(TTS.mode) } });
 });
 
 // ======================= CATCH-ALL PROXY ===================
