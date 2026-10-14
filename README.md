@@ -32,7 +32,9 @@ https://jpp.nevpn2.fenst4r.live
 - Jackbox Party Pack 5
 - Jackbox Party Pack 6
 - Jackbox Party Pack 7
-- Jackbox Party Pack 8, а конкретно
+- Jackbox Party Pack 8 (почти)
+
+## Jackbox Party Pack 8:
 
 - Рисовач: Анимач
 - Колесо Ненормального троллинга
