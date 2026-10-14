@@ -4090,6 +4090,22 @@ function handleHostObject(room, socket, msg, flags) {
       log("WS", `❌ Failed to send to player ${pid}: ${err.message}`);
     }
   }
+
+  if (room.audience && room.audience.size > 0) {
+    const acl = room.acls.get(key);
+    const audienceOk = !acl || acl.some((entry) => entry === 'role:audience' || entry === '*');
+    if (audienceOk) {
+      for (const [aid, a] of room.audience) {
+        if (!a.socket) continue;
+        try {
+          log("WS", `📤 -> AUDIENCE ${aid} ${opcode}: key="${key}"`);
+          a.socket.send(JSON.stringify({ pc: 0, opcode: opcode, result: { ...msg.params, version: room.versions.get(key), from: 1 } }));
+        } catch (err) {
+          log("WS", `❌ Failed to send to audience ${aid}: ${err.message}`);
+        }
+      }
+    }
+  }
 }
 
 function applyRoomSettings(room, params) {
@@ -4562,8 +4578,9 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
   };
 
   welcome.result.entities["audience"] = ["audience/pn-counter", { key: "audience", count: room.audience.size }, { locked: false }];
-  welcome.result.entities["audiencePlayer"] = ["object", { key: "audiencePlayer", val: { kind: "Logo" }, version: 0, from: 1 }, { locked: false }];
-  welcome.result.entities["textDescriptions"] = ["object", { key: "textDescriptions", val: { data: {}, latestDescriptions: [] }, version: 0, from: 1 }, { locked: false }];
+  const apVal = room.objects.has("audiencePlayer") ? room.objects.get("audiencePlayer") : { state: "Logo" };
+  welcome.result.entities["audiencePlayer"] = ["object", { key: "audiencePlayer", val: apVal, version: room.versions.get("audiencePlayer") || 0, from: 1 }, { locked: false }];
+  welcome.result.entities["textDescriptions"] = ["object", { key: "textDescriptions", val: room.objects.get("textDescriptions") || { data: {}, latestDescriptions: [] }, version: room.versions.get("textDescriptions") || 0, from: 1 }, { locked: false }];
 
   for (const [key, val] of room.objects) {
     if (key.startsWith("info:")) {
