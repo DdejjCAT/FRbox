@@ -3900,6 +3900,9 @@ function onHostConnect(room, socket, ip) {
           if (!a.socket) continue;
           try { a.socket.send(cg); } catch {}
         }
+        if (room.host) {
+          try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } })); } catch {}
+        }
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
         break;
       }
@@ -3968,6 +3971,27 @@ function broadcastAudienceCount(room) {
     const pc = room.pcPlayers.get(pid) || 0;
     room.pcPlayers.set(pid, pc + 1);
     try { p.socket.send(JSON.stringify({ pc: pc, ...base })); } catch {}
+  }
+}
+
+function tallyPlayerChoiceIntoCountGroup(room, choice) {
+  if (!room.voteEntities || room.voteEntities.size === 0) return;
+  const vname = room.voteEntities.keys().next().value;
+  if (!vname) return;
+  const choices = room.voteEntities.get(vname);
+  const keys2 = Object.keys(choices);
+  const idx = parseInt(choice, 10);
+  const voteKey = (idx >= 0 && idx < keys2.length) ? keys2[idx] : String(choice);
+  if (!(voteKey in choices)) return;
+  choices[voteKey] += 1;
+  log("WS", `🗳️ Player choice ${choice} → count-group "${vname}" ${voteKey}=${choices[voteKey]}`);
+  const cg = JSON.stringify({ pc: 0, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } });
+  for (const a of room.audience.values()) {
+    if (!a.socket) continue;
+    try { a.socket.send(cg); } catch {}
+  }
+  if (room.host) {
+    try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } })); } catch {}
   }
 }
 
@@ -4265,6 +4289,9 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, t
               result: { ...msg.params, from: id, userID: `00000000-0000-0000-0000-00000000000${id}` }
             }));
           } catch {}
+        }
+        if (msg.params && msg.params.body && msg.params.body.action === "choose" && msg.params.body.choice !== undefined) {
+          tallyPlayerChoiceIntoCountGroup(room, msg.params.body.choice);
         }
         room.pcPlayers.set(id, pc + 1);
         socket.send(JSON.stringify({ pc: pc, re: msg.seq, opcode: "ok", result: {} }));
