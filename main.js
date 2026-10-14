@@ -3914,8 +3914,8 @@ function onHostConnect(room, socket, ip) {
         socket.send(JSON.stringify({
           pc: room.pcHost++,
           re: msg.seq,
-          opcode: "ok",
-          result: { name: vname, choices: { ...choices } }
+          opcode: "audience/count-group",
+          result: { key: vname, choices: { ...choices } }
         }));
         break;
       }
