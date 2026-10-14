@@ -1051,6 +1051,8 @@ function createRoom(appId, appTag, maxPlayers, roomCode, userId) {
     objects: new Map(), versions: new Map(), fromMap: new Map(),
     restrictions: new Map(), locks: new Map(), types: new Map(), acls: new Map(),
     voteEntities: new Map(),
+    gCounters: new Map(),
+    pnCounters: new Map(),
     pcHost: 2, pcPlayers: new Map(),
     gameEndTimer: null, gameFinished: false,
     created: Date.now(), owner: null, creatorIP: null
@@ -3928,6 +3930,83 @@ function onHostConnect(room, socket, ip) {
         break;
       }
 
+      case "audience/g-counter/create": {
+        const key = String((msg.params || {}).key || "");
+        const count = Number((msg.params || {}).count) || 0;
+        room.gCounters.set(key, count);
+        log("WS", `🔢 g-counter create "${key}"=${count}`);
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
+      case "audience/g-counter/get": {
+        const key = String((msg.params || {}).key || "");
+        const count = room.gCounters.get(key) || 0;
+        log("WS", `🔢 g-counter get "${key}" → ${count}`);
+        socket.send(JSON.stringify({
+          pc: room.pcHost++,
+          re: msg.seq,
+          opcode: "audience/g-counter",
+          result: { key, count }
+        }));
+        break;
+      }
+
+      case "audience/g-counter/increment": {
+        const key = String((msg.params || {}).key || "");
+        const times = Number((msg.params || {}).times) || 1;
+        const cur = (room.gCounters.get(key) || 0) + times;
+        room.gCounters.set(key, cur);
+        log("WS", `🔢 g-counter increment "${key}" → ${cur}`);
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        const gc = JSON.stringify({ pc: 0, opcode: "audience/g-counter", result: { key, count: cur } });
+        for (const a of room.audience.values()) { if (a.socket) try { a.socket.send(gc); } catch {} }
+        break;
+      }
+
+      case "audience/pn-counter/create": {
+        const key = String((msg.params || {}).key || "");
+        const count = Number((msg.params || {}).count) || 0;
+        room.pnCounters.set(key, count);
+        if (key === "audience" && room.objects.has("audience")) room.objects.get("audience").count = count;
+        log("WS", `🔢 pn-counter create "${key}"=${count}`);
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
+      case "audience/pn-counter/get": {
+        const key = String((msg.params || {}).key || "");
+        const count = key === "audience" ? room.audience.size : (room.pnCounters.get(key) || 0);
+        log("WS", `🔢 pn-counter get "${key}" → ${count}`);
+        socket.send(JSON.stringify({
+          pc: room.pcHost++,
+          re: msg.seq,
+          opcode: "audience/pn-counter",
+          result: { key, count }
+        }));
+        break;
+      }
+
+      case "audience/pn-counter/increment": {
+        const key = String((msg.params || {}).key || "");
+        const times = Number((msg.params || {}).times) || 1;
+        const cur = (key === "audience" ? room.audience.size : (room.pnCounters.get(key) || 0)) + times;
+        if (key !== "audience") room.pnCounters.set(key, cur);
+        log("WS", `🔢 pn-counter increment "${key}" → ${cur}`);
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
+      case "audience/pn-counter/decrement": {
+        const key = String((msg.params || {}).key || "");
+        const times = Number((msg.params || {}).times) || 1;
+        const cur = Math.max(0, (room.pnCounters.get(key) || 0) - times);
+        room.pnCounters.set(key, cur);
+        log("WS", `🔢 pn-counter decrement "${key}" → ${cur}`);
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
       case "room/settings":
         applyRoomSettings(room, msg.params);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
@@ -4594,6 +4673,9 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
 
   for (const [vname, choices] of room.voteEntities) {
     welcome.result.entities[vname] = ["audience/count-group", { key: vname, choices: { ...choices } }, { locked: false }];
+  }
+  for (const [gk, gc] of room.gCounters) {
+    welcome.result.entities[gk] = ["audience/g-counter", { key: gk, count: gc }, { locked: false }];
   }
 
   log("WS", `📤 -> AUDIENCE welcome`, welcome);
