@@ -1050,6 +1050,7 @@ function createRoom(appId, appTag, maxPlayers, roomCode, userId) {
     host: null, hostToken: generateToken(),
     objects: new Map(), versions: new Map(), fromMap: new Map(),
     restrictions: new Map(), locks: new Map(), types: new Map(), acls: new Map(),
+    voteEntities: new Map(),
     pcHost: 2, pcPlayers: new Map(),
     gameEndTimer: null, gameFinished: false,
     created: Date.now(), owner: null, creatorIP: null
@@ -3885,7 +3886,45 @@ function onHostConnect(room, socket, ip) {
         log("WS", `ℹ️ Host ${opcode} (ignored)`);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
         break;
-        
+
+      case "audience/count-group/create": {
+        const p = msg.params || {};
+        const vname = String(p.name || "");
+        const opts = Array.isArray(p.options) ? p.options.map(String) : [];
+        const choices = {};
+        for (const c of opts) choices[c] = 0;
+        room.voteEntities.set(vname, choices);
+        log("WS", `🗳️ Audience count-group created: "${vname}" options=${JSON.stringify(opts)}`);
+        const cg = JSON.stringify({ pc: room.pcHost++, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } });
+        for (const a of room.audience.values()) {
+          if (!a.socket) continue;
+          try { a.socket.send(cg); } catch {}
+        }
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
+      case "audience/count-group/get": {
+        const vname = String((msg.params || {}).name || "");
+        const choices = room.voteEntities.get(vname) || {};
+        log("WS", `🗳️ Audience count-group get "${vname}" → ${JSON.stringify(choices)}`);
+        socket.send(JSON.stringify({
+          pc: room.pcHost++,
+          re: msg.seq,
+          opcode: "ok",
+          result: { name: vname, choices: { ...choices } }
+        }));
+        break;
+      }
+
+      case "audience/count-group/destroy": {
+        const vname = String((msg.params || {}).name || "");
+        room.voteEntities.delete(vname);
+        log("WS", `🗳️ Audience count-group destroyed: "${vname}"`);
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
       case "room/settings":
         applyRoomSettings(room, msg.params);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
@@ -4509,6 +4548,10 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
     welcome.result.entities["room"] = ["object", { key: "room", val: room.objects.get("room"), version: room.versions.get("room") || 0, from: 1 }, { locked: false }];
   }
 
+  for (const [vname, choices] of room.voteEntities) {
+    welcome.result.entities[vname] = ["audience/count-group", { key: vname, choices: { ...choices } }, { locked: false }];
+  }
+
   log("WS", `📤 -> AUDIENCE welcome`, welcome);
   socket.send(JSON.stringify(welcome));
 
@@ -4518,6 +4561,28 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
     log("WS_AUDIENCE_MSG", `📨 AUDIENCE "${name}" → opcode: ${opcode}`, msg.params || {});
     
     try {
+    if (msg.opcode === "audience/count-group/increment") {
+      const p = msg.params || {};
+      const vname = String(p.name || "");
+      const choices = room.voteEntities.get(vname);
+      const vote = String(p.vote);
+      if (!choices || !(vote in choices)) {
+        socket.send(JSON.stringify({ pc: 0, re: msg.seq, opcode: "error", result: { code: 1000, msg: "invalid arguments" } }));
+        return;
+      }
+      choices[vote] += (typeof p.times === "number" && p.times > 0) ? p.times : 1;
+      socket.send(JSON.stringify({ pc: 0, re: msg.seq, opcode: "ok", result: {} }));
+      const cg = JSON.stringify({ pc: 0, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } });
+      for (const a of room.audience.values()) {
+        if (!a.socket) continue;
+        try { a.socket.send(cg); } catch {}
+      }
+      if (room.host) {
+        try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } })); } catch {}
+      }
+      log("WS", `🗳️ AUDIENCE "${name}" vote ${vname}=${vote} → ${JSON.stringify(choices)}`);
+      return;
+    }
     if (msg.opcode === "client/send" && room.host) {
       try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "client/send", result: { ...msg.params, fromAudience: id, audienceName: name } })); } catch {}
     }
