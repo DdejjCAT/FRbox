@@ -4348,6 +4348,21 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, t
     log("WS_PLAYER_MSG", `📨 PLAYER "${name}" → opcode: ${opcode}`, msg.params || msg.result || {});
 
     try {
+    if (opcode === "text/get") {
+      const gkey = String((msg.params || {}).key || "");
+      const gval = room.objects.has(gkey) ? room.objects.get(gkey) : "";
+      const gver = room.versions.get(gkey) || 0;
+      log("WS", `📥 Player ${id} text/get "${gkey}" → ${JSON.stringify(gval)} v${gver}`);
+      socket.send(JSON.stringify({
+        pc: pc + 1,
+        re: msg.seq,
+        opcode: "text",
+        result: { key: gkey, val: gval, version: gver, from: room.fromMap.get(gkey) || 1 }
+      }));
+      room.pcPlayers.set(id, pc + 1);
+      return;
+    }
+
     const isText = opcode.startsWith("text/");
     const isNumber = opcode.startsWith("number/");
     const isDoodle = opcode.startsWith("doodle/");
@@ -4448,7 +4463,7 @@ function handlePlayerObject(room, id, socket, msg, flags) {
   if (params.val === undefined && params.value !== undefined) params.val = params.value;
   const val = params.val !== undefined ? params.val : params.value;
   
-  if (room.versions.get(key) === undefined) {
+  if (room.versions.get(key) === undefined && !isText && !isNumber) {
     const pc = room.pcPlayers.get(id) || 0;
     room.pcPlayers.set(id, pc + 1);
     socket.send(JSON.stringify({ pc: pc, re: msg.seq, opcode: "ok", result: {} }));
@@ -4477,6 +4492,9 @@ function handlePlayerObject(room, id, socket, msg, flags) {
   } else {
     room.objects.set(key, val);
   }
+  
+  if (isText && val !== undefined) room.objects.set(key, val);
+  if (isNumber && val !== undefined) room.objects.set(key, val);
   
   room.versions.set(key, (room.versions.get(key) || 0) + 1);
   room.fromMap.set(key, id);
