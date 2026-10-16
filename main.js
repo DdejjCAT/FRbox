@@ -31,7 +31,25 @@ try {
   };
 }
 
-const INTERNAL_TOKEN = CONFIG.internalToken || "debug-token";
+// ======================= ASCII ART =======================
+const ASCII_ART = `
+   ,d8888b          d8b                       
+   88P'             ?88                       
+d888888P             88b                      
+  ?88'      88bd88b  888888b  d8888b ?88,  88P
+  88P       88P'  \`  88P \`?8bd8P' ?88 \`?8bd8P'
+ d88       d88      d88,  d8888b  d88 d8P?8b, 
+d88'      d88'     d88'\`?88P'\`?8888P'd8P' \`?8b
+
+w/ <3 @error_kill (TG/DS)`;
+
+// ======================= INTERNAL TOKEN ====================
+const DEFAULT_INTERNAL_TOKEN = "debug-token";
+if (!CONFIG.internalToken || CONFIG.internalToken === DEFAULT_INTERNAL_TOKEN) {
+  console.log("\x1b[41m\x1b[97m\x1b[1m\x1b[5m ТОКЕН АДМИНИСТРАТОРА НЕ УСТАНОВЛЕН, СТАВЛЮ РАНДОМНЫЙ ТОКЕН \x1b[0m");
+  CONFIG.internalToken = crypto.randomBytes(32).toString("hex");
+}
+const INTERNAL_TOKEN = CONFIG.internalToken || crypto.randomBytes(32).toString("hex");
 const PORT = CONFIG.port || 3489;
 const accessibleHost = CONFIG.host || "jack.fenst4r.live";
 
@@ -4749,6 +4767,7 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
 
 // ======================= START ====================
 server.listen(PORT, "0.0.0.0", () => {
+  console.log(ASCII_ART);
   console.log(`
 ===========================================`);
   console.log(`FRbox server v3.0 started`);
