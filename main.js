@@ -1380,13 +1380,13 @@ async function tunnelUpstreamWs(socket, req, realHost) {
   try { socket.terminate(); } catch (e) { /* ignore */ }
 }
 
-async function proxyToJackbox(req, res, source) {
-  const path = req.originalUrl;
-  const targetUrl = `https://ecast.jackboxgames.com${path}`;
+async function proxyToJackbox(req, res, source, host = "ecast.jackboxgames.com", pathOverride = null) {
+  const path = (pathOverride !== null && pathOverride !== undefined) ? pathOverride : req.originalUrl;
+  const targetUrl = `https://${host}${path}`;
   const parsed = urlNode.parse(targetUrl);
   const agent = await xrayManager.getAgent();
 
-  log(source, `🌐 ${req.method} ${path} → ecast.jackboxgames.com${path}`);
+  log(source, `🌐 ${req.method} ${path} → ${host}${path}`);
 
   let requestBody = null;
   if (req.body && Object.keys(req.body).length > 0) requestBody = req.body;
@@ -1395,7 +1395,7 @@ async function proxyToJackbox(req, res, source) {
     'user-agent': req.headers['user-agent'] || "JackboxGames/1.00 libcurl/7.57.0-DEV OpenSSL/1.1.1g zlib/1.2.7 (Win-Steam)",
     'accept': req.headers.accept || '*/*',
     'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-    'host': 'ecast.jackboxgames.com',
+    'host': host,
     'connection': 'keep-alive',
   };
   if (req.headers.cookie) headers.cookie = req.headers.cookie;
@@ -1406,9 +1406,9 @@ async function proxyToJackbox(req, res, source) {
   if (requestBody) log(source, `📤 REQUEST BODY`, requestBody);
 
   const options = {
-    hostname: 'ecast.jackboxgames.com', port: 443,
+    hostname: host, port: 443,
     path: parsed.path, method: req.method, headers,
-    rejectUnauthorized: false, servername: 'ecast.jackboxgames.com'
+    rejectUnauthorized: false, servername: host
   };
   if (agent) options.agent = agent;
 
@@ -1862,6 +1862,29 @@ app.use(async (req, res, next) => {
 app.use(async (req, res, next) => {
   if (!req.path.startsWith("/storage/")) return next();
   return proxyToJackbox(req, res, "STORAGE");
+});
+
+// /jbox/<host>/<path> — все ссылки на *.jackbox.tv гоняются через наш сервер (прокси + Xray)
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith("/jbox/")) return next();
+  const after = req.originalUrl.slice("/jbox/".length);
+  const stop = after.search(/[/?#]/);
+  let host = stop === -1 ? after : after.slice(0, stop);
+  let rest = stop === -1 ? "/" : after.slice(stop);
+  if (rest[0] !== "/") rest = "/" + rest;
+  try { host = decodeURIComponent(host).toLowerCase(); } catch { host = ""; }
+  const hostOk = /^[a-z0-9.-]+$/.test(host) && (host === "jackbox.tv" || host.endsWith(".jackbox.tv"));
+  if (!hostOk) {
+    log("JBOX", `⛔ blocked host: ${host}`);
+    return res.status(403).json({ error: "jbox: host not allowed" });
+  }
+  return proxyToJackbox(req, res, "JBOX", host, rest);
+});
+
+// Относительные /gallery/... ссылки из игр — это галереи jackbox.tv, тоже через прокси
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith("/gallery/")) return next();
+  return proxyToJackbox(req, res, "GALLERY", "jackbox.tv", req.originalUrl);
 });
 
 app.use(express.json({ limit: '2mb' }));
