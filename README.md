@@ -468,6 +468,7 @@ MIT — см. [LICENSE](LICENSE).
 ## Связь и сообщество
 
 - Связь: https://t.me/error_kill (TG/DS)
+- Telegram канал: https://t.me/jackfrbox
 - Все обновления и логи создания сервера можно видеть в чате русского комьюнити Jackbox: https://t.me/Jackbox_Pack_Chat
 
 ---
