@@ -33,15 +33,14 @@ https://jpp.nevpn2.fenst4r.live
 - Jackbox Party Pack 5
 - Jackbox Party Pack 6
 - Jackbox Party Pack 7
-- Jackbox Party Pack 8 (почти)
+- Jackbox Party Pack 8
+- Jackbox Party Pack 9 (почти, чит. ниже)
 
-### Jackbox Party Pack 8:
+### Jackbox Party Pack 9:
 
-- Рисовач: Анимач
-- Колесо Ненормального троллинга
-- Шахты тайн
-- Преступление и Рисование? (Багфикс не тестировался)
-
+- Бредовуха 4
+- Квартиранг
+- Тестирование игр продолжается каждый день разработки!
 
 ## Возможности
 
