@@ -1944,7 +1944,7 @@ app.use(async (req, res, next) => {
   let rest = stop === -1 ? "/" : after.slice(stop);
   if (rest[0] !== "/") rest = "/" + rest;
   try { host = decodeURIComponent(host).toLowerCase(); } catch { host = ""; }
-  const hostOk = /^[a-z0-9.-]+$/.test(host) && (host === "jackbox.tv" || host.endsWith(".jackbox.tv"));
+  const hostOk = /^[a-z0-9.-]+$/.test(host) && (host === "jackbox.tv" || host.endsWith(".jackbox.tv") || host === "cdn.jackboxgames.com");
   if (!hostOk) {
     log("JBOX", `⛔ blocked host: ${host}`);
     return res.status(403).json({ error: "jbox: host not allowed" });
@@ -4138,6 +4138,41 @@ function onHostConnect(room, socket, ip) {
         applyRoomSettings(room, msg.params);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
         break;
+
+      case "text-map/create": {
+        const key = msg.params?.key;
+        if (key) {
+          room.objects.set(key, msg.params?.val ?? {});
+          room.types.set(key, "text-map");
+          room.versions.set(key, 0);
+          room.locks.set(key, false);
+          room.fromMap.set(key, 1);
+          if (msg.params?.acl) room.acls.set(key, normalizeAcl(msg.params.acl));
+        }
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        break;
+      }
+
+      case "text-map/get": {
+        const key = msg.params?.key;
+        socket.send(JSON.stringify({
+          pc: room.pcHost++,
+          re: msg.seq,
+          opcode: "text-map/state",
+          result: { key, from: 1, text: "", attributions: {} }
+        }));
+        break;
+      }
+
+      case "text-map/sync": {
+        const key = msg.params?.key;
+        const m = msg.params?.msg;
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        const payload = JSON.stringify({ pc: 0, opcode: "text-map/synced", result: { key, from: 1, msg: m } });
+        for (const [, p] of room.players) { if (!p.socket) continue; try { p.socket.send(payload); } catch {} }
+        for (const [, a] of room.audience) { if (!a.socket) continue; try { a.socket.send(payload); } catch {} }
+        break;
+      }
         
       case "client/send":
         log("WS", `📨 Host client/send`, msg.params);
@@ -4579,6 +4614,17 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, t
         room.pcPlayers.set(id, pc + 1);
         socket.send(JSON.stringify({ pc: pc, re: msg.seq, opcode: "ok", result: {} }));
         break;
+
+      case "text-map/sync": {
+        const key = msg.params?.key;
+        const m = msg.params?.msg;
+        room.pcPlayers.set(id, pc + 1);
+        socket.send(JSON.stringify({ pc: pc, re: msg.seq, opcode: "ok", result: {} }));
+        const payload = JSON.stringify({ pc: 0, opcode: "text-map/synced", result: { key, from: id, msg: m } });
+        if (room.host) { try { room.host.send(payload); } catch {} }
+        for (const [pid2, p] of room.players) { if (pid2 === id || !p.socket) continue; try { p.socket.send(payload); } catch {} }
+        break;
+      }
         
       default:
         log("WS", `⚠️ Unimplemented player opcode: ${opcode}`, msg);
