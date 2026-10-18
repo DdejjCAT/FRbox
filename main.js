@@ -1144,6 +1144,7 @@ function createRoom(appId, appTag, maxPlayers, roomCode, userId) {
     pnCounters: new Map(),
     pcHost: 2, pcPlayers: new Map(),
     gameEndTimer: null, gameFinished: false,
+    bannedNames: new Set(), bannedIDs: new Set(),
     created: Date.now(), owner: null, creatorIP: null
   };
   return room;
@@ -4178,6 +4179,37 @@ function onHostConnect(room, socket, ip) {
         log("WS", `📨 Host client/send`, msg.params);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
         break;
+
+      case "client/kick": {
+        const pid = parseInt(msg.params && msg.params.id);
+        const banned = !!(msg.params && msg.params.ban);
+        const reason = (msg.params && msg.params.reason) || "";
+        const pl = room.players.get(pid);
+        const kicked = { id: pid, banned, reason };
+        socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
+        if (pl && pl.socket) {
+          try { pl.socket.send(JSON.stringify({ pc: 0, opcode: "client/kicked", result: kicked })); } catch {}
+          try { pl.socket.terminate(); } catch {}
+        }
+        if (pl) {
+          if (banned) {
+            room.bannedNames.add(pl.name);
+            room.bannedIDs.add(pid);
+          }
+          room.players.delete(pid);
+          room.disconnectedPlayers.delete(pl.name);
+        }
+        for (const [opid, p] of room.players) {
+          if (opid === pid || !p.socket) continue;
+          try { p.socket.send(JSON.stringify({ pc: room.pcPlayers.get(opid) || 0, opcode: "client/kicked", result: kicked })); } catch {}
+        }
+        for (const mod of room.moderators.values()) {
+          if (!mod.socket) continue;
+          try { mod.socket.send(JSON.stringify({ pc: 0, opcode: "client/kicked", result: kicked })); } catch {}
+        }
+        log("WS", `🥾 Host kicked player ${pid}${banned ? " (banned)" : ""}`);
+        break;
+      }
         
       default:
         log("WS", `⚠️ Unimplemented host opcode: ${opcode}`, msg);
@@ -4410,6 +4442,13 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, t
     return;
   }
   const name = (playerName || `PLAYER${room.nextPlayerId}`).trim();
+
+  // Игрок, кикнутый хостом с баном — не пускаем обратно.
+  if (room.bannedNames.has(name) || (playerId && room.bannedIDs.has(parseInt(playerId)))) {
+    log("WS", `🚫 Banned player "${name}" (id=${playerId}) rejected from ${room.roomCode}`);
+    try { socket.send(JSON.stringify({ pc: 0, opcode: "client/kicked", result: { id: parseInt(playerId) || 0, banned: true, reason: "banned" } })); } catch {}
+    return socket.terminate();
+  }
 
   // Ник уже занят с другого IP -> отправляем в зрители, а не отдаём профиль игрока.
   const existingByName = findPlayerByName(room, name);
