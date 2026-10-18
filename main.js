@@ -681,6 +681,7 @@ function generateRoomCode() {
   return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * 26)]).join("");
 }
 function pickPreparedRoom(ip) {
+  reloadStickyRoomsIfChanged();
   const sticky = stickyRooms.get(ip);
   if (sticky) return { code: sticky, owner: null, sticky: true };
   const exact = preparedRooms.get(ip);
@@ -1071,6 +1072,54 @@ function saveStickyRooms() {
   const tmp = STICKY_ROOMS_FILE + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
   fs.renameSync(tmp, STICKY_ROOMS_FILE);
+  stickyRoomsMtime = Date.now();
+}
+
+// Динамическая подгрузка sticky-кодов: если файл меняется снаружи —
+// перечитываем его при следующем обращении, без рестарта.
+let stickyRoomsMtime = 0;
+try { stickyRoomsMtime = fs.statSync(STICKY_ROOMS_FILE).mtimeMs; } catch {}
+function reloadStickyRoomsIfChanged() {
+  let mtime = 0;
+  try { mtime = fs.statSync(STICKY_ROOMS_FILE).mtimeMs; } catch { return; }
+  if (mtime === stickyRoomsMtime) return;
+  stickyRoomsMtime = mtime;
+  try {
+    const raw = JSON.parse(fs.readFileSync(STICKY_ROOMS_FILE, "utf-8"));
+    stickyRooms.clear();
+    for (const [ip, v] of Object.entries(raw)) {
+      const code = typeof v === "string" ? v : (v && v.code);
+      if (code) stickyRooms.set(ip, String(code).toUpperCase());
+    }
+    log("ROOM", `📌 Sticky rooms reloaded (no restart): ${[...stickyRooms.entries()].map(([ip, c]) => `${ip}→${c}`).join(", ") || "none"}`);
+  } catch {}
+}
+
+// Мета комнат (appId/appTag/настройки) — чтобы при реконнекте хоста по WS
+// (комната уже удалена) авто-создать её с тем же тегом, а не "custom",
+// иначе GET /api/v2/rooms/:code -> 404 и перезаход с сайта не работает.
+const ROOM_META_FILE = "./data/room-meta.json";
+const roomMeta = new Map();
+try {
+  const raw = JSON.parse(fs.readFileSync(ROOM_META_FILE, "utf-8"));
+  for (const [code, v] of Object.entries(raw)) if (v && v.appTag) roomMeta.set(String(code).toUpperCase(), v);
+  log("ROOM", `🗃️ Room meta loaded: ${roomMeta.size} entries`);
+} catch {}
+function saveRoomMeta(code, fields) {
+  const prev = roomMeta.get(code) || {};
+  roomMeta.set(code, { ...prev, ...fields });
+  if (roomMeta.size > 200) {
+    const first = roomMeta.keys().next().value;
+    roomMeta.delete(first);
+  }
+  try {
+    const obj = {};
+    for (const [c, v] of roomMeta) obj[c] = v;
+    fs.mkdirSync("./data", { recursive: true });
+    const tmp = ROOM_META_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmp, ROOM_META_FILE);
+  } catch {}
 }
 
 const MODERATION_TAGS = new Set(["quiplash3-tjsp","awshirt-tjsp","drawful2international","bigsurvey","fakinitxl","jackbox-talks","quiplash3","worldchamps","fourbage","htmf","antique-freak","range-game","awshirt2","risky-text","us-them","fakinit2","drawful3","captcha","you-ruined-it","mic-game","cookies","dirty-detectives","grating-cards","megafriends","debate","reaction","processing"]);
@@ -2222,6 +2271,7 @@ app.post("/api/v2/rooms", (req, res) => {
   rooms.set(code, room);
 
   log("ROOM", `Created: ${code} (${appTag})`, { owner, creatorIP: ip, twitch: room.twitchRequired });
+  saveRoomMeta(code, { appId, appTag, maxPlayers, twitchRequired: room.twitchRequired, audienceEnabled: room.audienceEnabled, gamePassword: room.gamePassword, moderatorPassword: room.moderatorPassword, owner });
   const resp = { host: accessibleHost, code, token: room.hostToken };
   res.json({ ok: true, body: { ...resp }, ...resp });
 });
@@ -2767,6 +2817,7 @@ app.post("/room", (req, res) => {
   rooms.set(code, room);
 
   log("LEGACY", `✅ POST /room created ${code} (${appTag})`, { owner, creatorIP: ip });
+  saveRoomMeta(code, { appId, appTag, maxPlayers, audienceEnabled: room.audienceEnabled, gamePassword: room.gamePassword, owner });
   const resp = { host: accessibleHost, code, token: room.hostToken };
   res.json({ ok: true, body: { ...resp }, ...resp });
 });
@@ -3533,7 +3584,7 @@ function onBlobcastEcastClient(socket, query, blob, opts) {
 
     if (isAudience && opcode === 'audience/count-group/increment') {
       const params = msg.params || {};
-      const vname = String(params.name || '');
+      const vname = String(params.name || params.key || '');
       const choices = blob.voteEntities.get(vname);
       if (!choices || !(params.vote in choices)) {
         blobEcastSend(blob, socket, {
@@ -3745,10 +3796,23 @@ ecastWss.on("connection", (socket, req) => {
   let room = rooms.get(roomCode);
   if (!room && isHost) {
     const prepared = pickPreparedRoom(ip);
-    room = createRoom(query.appId || "unknown", query.appTag || "custom", parseInt(query.maxPlayers) || 100, roomCode, prepared?.owner);
-    room.owner = prepared?.owner; room.creatorIP = ip;
+    const meta = roomMeta.get(roomCode);
+    room = createRoom(
+      query.appId || meta?.appId || "unknown",
+      query.appTag || meta?.appTag || "custom",
+      parseInt(query.maxPlayers) || meta?.maxPlayers || 100,
+      roomCode,
+      prepared?.owner || meta?.owner
+    );
+    room.owner = prepared?.owner || meta?.owner; room.creatorIP = ip;
+    if (meta) {
+      room.twitchRequired = !!meta.twitchRequired;
+      room.audienceEnabled = !!meta.audienceEnabled;
+      room.gamePassword = meta.gamePassword || null;
+      room.moderatorPassword = meta.moderatorPassword || null;
+    }
     rooms.set(roomCode, room);
-    log("ROOM", `Auto-created room ${roomCode} for host`);
+    log("ROOM", `Auto-created room ${roomCode} for host (${room.appTag}${meta ? ", meta restored" : ""})`);
   }
 
   if (!room && !isHost) {
@@ -3954,7 +4018,7 @@ function onHostConnect(room, socket, ip) {
 
       case "audience/count-group/create": {
         const p = msg.params || {};
-        const vname = String(p.name || "");
+        const vname = String(p.name || p.key || "");
         const opts = Array.isArray(p.options) ? p.options.map(String) : [];
         const choices = {};
         for (const c of opts) choices[c] = 0;
@@ -3973,7 +4037,7 @@ function onHostConnect(room, socket, ip) {
       }
 
       case "audience/count-group/get": {
-        const vname = String((msg.params || {}).name || "");
+        const vname = String((msg.params || {}).name || (msg.params || {}).key || "");
         const choices = room.voteEntities.get(vname) || {};
         log("WS", `🗳️ Audience count-group get "${vname}" → ${JSON.stringify(choices)}`);
         socket.send(JSON.stringify({
@@ -3986,7 +4050,7 @@ function onHostConnect(room, socket, ip) {
       }
 
       case "audience/count-group/destroy": {
-        const vname = String((msg.params || {}).name || "");
+        const vname = String((msg.params || {}).name || (msg.params || {}).key || "");
         room.voteEntities.delete(vname);
         log("WS", `🗳️ Audience count-group destroyed: "${vname}"`);
         socket.send(JSON.stringify({ pc: room.pcHost++, re: msg.seq, opcode: "ok", result: {} }));
@@ -4809,7 +4873,7 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
     try {
     if (msg.opcode === "audience/count-group/increment") {
       const p = msg.params || {};
-      const vname = String(p.name || "");
+      const vname = String(p.name || p.key || "");
       const choices = room.voteEntities.get(vname);
       const vote = String(p.vote);
       if (!choices || !(vote in choices)) {
