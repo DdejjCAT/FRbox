@@ -681,6 +681,8 @@ function generateRoomCode() {
   return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * 26)]).join("");
 }
 function pickPreparedRoom(ip) {
+  const sticky = stickyRooms.get(ip);
+  if (sticky) return { code: sticky, owner: null, sticky: true };
   const exact = preparedRooms.get(ip);
   if (exact) return exact;
   const cand = [...preparedRooms.values()]
@@ -1050,6 +1052,26 @@ setInterval(async () => {
 // ======================= ROOM STORAGE ===================
 const rooms = new Map();
 const preparedRooms = new Map();
+
+// Sticky room codes: IP -> код комнаты навсегда (персистентно, не расходуется)
+const STICKY_ROOMS_FILE = "./data/sticky-rooms.json";
+const stickyRooms = new Map();
+try {
+  const raw = JSON.parse(fs.readFileSync(STICKY_ROOMS_FILE, "utf-8"));
+  for (const [ip, v] of Object.entries(raw)) {
+    const code = typeof v === "string" ? v : (v && v.code);
+    if (code) stickyRooms.set(ip, String(code).toUpperCase());
+  }
+  log("ROOM", `📌 Sticky rooms: ${[...stickyRooms.entries()].map(([ip, c]) => `${ip}→${c}`).join(", ") || "none"}`);
+} catch {}
+function saveStickyRooms() {
+  const obj = {};
+  for (const [ip, code] of stickyRooms) obj[ip] = code;
+  fs.mkdirSync("./data", { recursive: true });
+  const tmp = STICKY_ROOMS_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.renameSync(tmp, STICKY_ROOMS_FILE);
+}
 
 const MODERATION_TAGS = new Set(["quiplash3-tjsp","awshirt-tjsp","drawful2international","bigsurvey","fakinitxl","jackbox-talks","quiplash3","worldchamps","fourbage","htmf","antique-freak","range-game","awshirt2","risky-text","us-them","fakinit2","drawful3","captcha","you-ruined-it","mic-game","cookies","dirty-detectives","grating-cards","megafriends","debate","reaction","processing"]);
 
