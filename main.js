@@ -4166,10 +4166,14 @@ function handleHostObject(room, socket, msg, flags) {
   else if (isDoodle) opcode = "doodle";
   
   if (isDoodle && !isText && !isNumber) {
-    const doodleVal = JSON.parse(JSON.stringify(params));
-    delete doodleVal.acl;
+    const prev = room.objects.get(key) || {};
+    const doodleVal = { ...prev };
+    for (const k of Object.keys(params)) {
+      if (k === "acl" || k === "key" || k === "val" || k === "value") continue;
+      try { doodleVal[k] = JSON.parse(JSON.stringify(params[k])); } catch { doodleVal[k] = params[k]; }
+    }
+    if (!Array.isArray(doodleVal.lines)) doodleVal.lines = [];
     room.objects.set(key, doodleVal);
-    room.objects.get(key).lines = [];
   } else {
     room.objects.set(key, val);
   }
@@ -4210,20 +4214,34 @@ function handleHostObject(room, socket, msg, flags) {
     const oldPc = room.pcPlayers.get(pid) || 0;
     room.pcPlayers.set(pid, oldPc + 1);
     
-    let result = { ...msg.params };
-    delete result.min; delete result.max; delete result.type;
-    delete result.increment; delete result.accept; delete result.reject;
-    
-    if (isNumber && !isText) {
-      result.restrictions = room.restrictions.get(key) || {};
-    }
-    
-    if (!isDoodle || isText || isNumber) {
-      result.version = room.versions.get(key);
+    let result;
+    if (isDoodle && !isText && !isNumber) {
+      const stored = room.objects.get(key) || {};
+      result = {
+        key: key,
+        from: 1,
+        index: room.versions.get(key),
+        acl: msg.params.acl,
+        val: {
+          colors: stored.colors,
+          lines: stored.lines || [],
+          live: stored.live,
+          maxLayer: stored.maxLayer,
+          maxPoints: stored.maxPoints,
+          size: stored.size,
+          weights: stored.weights
+        }
+      };
     } else {
-      result.index = room.versions.get(key);
+      result = { ...msg.params };
+      delete result.min; delete result.max; delete result.type;
+      delete result.increment; delete result.accept; delete result.reject;
+      if (isNumber && !isText) {
+        result.restrictions = room.restrictions.get(key) || {};
+      }
+      result.version = room.versions.get(key);
+      result.from = 1;
     }
-    result.from = 1;
     
     try {
       log("WS", `📤 -> PLAYER ${pid} ${opcode}: key="${key}" (pc=${oldPc})`);
@@ -4241,7 +4259,28 @@ function handleHostObject(room, socket, msg, flags) {
         if (!a.socket) continue;
         try {
           log("WS", `📤 -> AUDIENCE ${aid} ${opcode}: key="${key}"`);
-          a.socket.send(JSON.stringify({ pc: 0, opcode: opcode, result: { ...msg.params, version: room.versions.get(key), from: 1 } }));
+          let aresult;
+          if (isDoodle && !isText && !isNumber) {
+            const stored = room.objects.get(key) || {};
+            aresult = {
+              key: key,
+              from: 1,
+              index: room.versions.get(key),
+              acl: msg.params.acl,
+              val: {
+                colors: stored.colors,
+                lines: stored.lines || [],
+                live: stored.live,
+                maxLayer: stored.maxLayer,
+                maxPoints: stored.maxPoints,
+                size: stored.size,
+                weights: stored.weights
+              }
+            };
+          } else {
+            aresult = { ...msg.params, version: room.versions.get(key), from: 1 };
+          }
+          a.socket.send(JSON.stringify({ pc: 0, opcode: opcode, result: aresult }));
         } catch (err) {
           log("WS", `❌ Failed to send to audience ${aid}: ${err.message}`);
         }
