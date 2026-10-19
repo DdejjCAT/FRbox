@@ -1,5 +1,6 @@
 {
   "port": 3489,
+  "sitePort": 3490,
   "host": "jack.nevpn2.fenst4r.live",
   "internalToken": "REPLACETHIS",
   "panel": {
@@ -33,6 +34,7 @@
   },
   "xrayBin": "./xray-bin/xray",
   "xrayLocalPort": 10808,
+  "siteRoot": "./site",
   "xraySubscription": "REPLACETHIS",
   "xraySubscriptionHeaders": {
     "User-Agent": "v2rayTun/3.2.1 (Android 13; SM-G998B)",

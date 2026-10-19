@@ -52,6 +52,9 @@ if (!CONFIG.internalToken || CONFIG.internalToken === DEFAULT_INTERNAL_TOKEN) {
 const INTERNAL_TOKEN = CONFIG.internalToken || crypto.randomBytes(32).toString("hex");
 const PORT = CONFIG.port || 3489;
 const accessibleHost = CONFIG.host || "jack.fenst4r.live";
+// Отдельный статичный порт для сайта-оболочки (siteRoot).
+// По умолчанию — порт сервера + 1. Переопределяется в config.json: "sitePort": 3490. 0 — выключить.
+const SITE_PORT = (CONFIG.sitePort === 0) ? 0 : (parseInt(CONFIG.sitePort, 10) || PORT + 1);
 
 // ======================= PANEL (регистрация + права) ==========================
 // registrationEnabled: false — панель без открытой регистрации
@@ -1802,7 +1805,7 @@ const app = express();
 const ARCADE_UPSTREAM = "https://api.jackboxgames.com";
 const BINJPIPE_UPSTREAM = "https://binjpipe.jackboxgames.com";
 const MIXPANEL_UPSTREAM = "https://api-js.mixpanel.com";
-const SITE_ROOT = CONFIG.siteRoot || process.env.SITE_ROOT || "/var/www/jacksiteNEW";
+const SITE_ROOT = CONFIG.siteRoot || process.env.SITE_ROOT || "./site";
 
 // Хост панели — основной сервер (CONFIG.host, jack.*); остальные хосты (jpp.*) — сайт-оболочка контроллера.
 function isPanelHost(req) {
@@ -4999,6 +5002,25 @@ function onAudienceConnect(room, socket, audienceName, ip, force) {
 }
 
 // ======================= START ====================
+// Отдельный статичный сервер сайта-оболочки (контроллер) на SITE_PORT.
+// Раздаёт только файлы из SITE_ROOT — без API/WS панели.
+if (SITE_PORT > 0) {
+  const siteApp = express();
+  siteApp.use(express.static(SITE_ROOT, { index: "index.html" }));
+  // SPA-фолбэк (аналог nginx try_files)
+  siteApp.use((req, res) => {
+    if ((req.method === "GET" || req.method === "HEAD") && req.accepts("html")) {
+      const indexPath = SITE_ROOT + "/index.html";
+      if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+    }
+    res.status(404).send("Not found");
+  });
+  const siteServer = http.createServer(siteApp);
+  siteServer.listen(SITE_PORT, "0.0.0.0", () => {
+    console.log(`🌐 Site (controller shell): port ${SITE_PORT} | root: ${SITE_ROOT}`);
+  });
+}
+
 server.listen(PORT, "0.0.0.0", () => {
   console.log(ASCII_ART);
   console.log(`

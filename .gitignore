@@ -8,12 +8,7 @@ data/
 certs/
 backups/
 oldservers/
-xray-bin/
 .claude/
-
-# controller site bundles (published separately)
-BRQY40Mb.js
-script-0.js
 
 # logs / env / misc
 *.log
