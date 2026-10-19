@@ -1,6 +1,6 @@
 # FRbox
 
-Приватный сервер для Jackbox Games (паки **JPP1–TMP3**), написанный на Node.js.
+Приватный сервер для Jackbox Games (все паки Jackbox Games, от JPP1 до TMP3 и JPP12), написанный на Node.js.
 Совместим с клиентом контроллера Ecast и устаревшим протоколом Blobcast (Socket.IO v1).
 - Автор: **@error_kill**.
 - Telegram канал: https://t.me/jackfrbox
