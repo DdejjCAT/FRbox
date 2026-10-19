@@ -36,13 +36,8 @@ https://jpp.nevpn2.fenst4r.live
 - Jackbox Party Pack 6
 - Jackbox Party Pack 7
 - Jackbox Party Pack 8
-- Jackbox Party Pack 9 (почти, чит. ниже)
-
-### Jackbox Party Pack 9:
-
-- Бредовуха 4
-- Квартиранг
-- Тестирование игр продолжается каждый день разработки!
+- Jackbox Party Pack 9
+- Jackbox Party Pack 10
 
 ## Возможности
 
