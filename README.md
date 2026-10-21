@@ -506,7 +506,7 @@ MIT — см. [LICENSE](LICENSE).
 - https://t.me/CapringYT
 - https://t.me/Loamfy
 - https://t.me/sssssggggg1234
-- https://t.me/FfGior — за вдохновение
+- https://t.me/FfGior - за вдохновение
 - https://t.me/Jackbox_Pack_Chat - за такое хорошее? комьюнити
 
 Также сервер сильно вдохновлён и использует части кода таких серверов, как:
