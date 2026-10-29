@@ -38,7 +38,7 @@ https://jpp.nevpn2.fenst4r.live
 - Jackbox Party Pack 8
 - Jackbox Party Pack 9
 - Jackbox Party Pack 10
-- Jackbox Party Pack 11 (искл. "Подозрективы", не проверено)
+- Jackbox Party Pack 11
 
 ## Возможности
 
