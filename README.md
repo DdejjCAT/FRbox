@@ -40,6 +40,8 @@ https://jpp.nevpn2.fenst4r.live
 - Jackbox Party Pack 10
 - Jackbox Party Pack 11
 
+фикс 12 пака будет только после его перевода!
+
 ## Возможности
 
 - HTTP API Ecast: создание комнат, каталог игр, комната/префлайт, accessToken.
