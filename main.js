@@ -3655,6 +3655,45 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// Очистка пустых комнат: нет хоста, нет активных игроков/зрителей/модераторов —
+// комната живёт ещё ROOM_EMPTY_TTL_MS (на случай реконнекта хоста), потом удаляется.
+const ROOM_EMPTY_TTL_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    const hasHost = !!room.host && room.host.readyState === WebSocket.OPEN;
+    const hasPlayers = [...room.players.values()].some(p => p.socket && p.socket.readyState === WebSocket.OPEN);
+    const hasAudience = [...room.audience.values()].some(a => a.socket && a.socket.readyState === WebSocket.OPEN);
+    const hasMods = [...room.moderators.values()].some(m => m.socket && m.socket.readyState === WebSocket.OPEN);
+    if (!hasHost && !hasPlayers && !hasAudience && !hasMods) {
+      if (!room.emptySince) room.emptySince = now;
+      if (now - room.emptySince > ROOM_EMPTY_TTL_MS) {
+        log("ROOM", `🗑️ Empty room ${code} expired (${ROOM_EMPTY_TTL_MS / 60000} min), deleting`);
+        room.disconnectedTimers.forEach?.(t => clearTimeout(t));
+        if (room.gameEndTimer) { clearTimeout(room.gameEndTimer); room.gameEndTimer = null; }
+        rooms.delete(code);
+      }
+    } else if (room.emptySince) {
+      room.emptySince = null;
+    }
+  }
+  // Blobcast-комнаты: нет хост-сессии, нет подключённых клиентов и зрителей
+  for (const [code, blob] of blobcastRooms) {
+    const hasHostSession = !!blob.hostSession;
+    const hasConnected = [...blob.clients.values()].some(c => c.connected && c.socket && c.socket.readyState === WebSocket.OPEN);
+    const hasAudience = blob.audienceSockets.size > 0;
+    if (!hasHostSession && !hasConnected && !hasAudience) {
+      if (!blob.emptySince) blob.emptySince = now;
+      if (now - blob.emptySince > ROOM_EMPTY_TTL_MS) {
+        log("BLOBcast", `🗑️ Empty blobcast room ${code} expired, deleting`);
+        blobcastRooms.delete(code);
+      }
+    } else if (blob.emptySince) {
+      blob.emptySince = null;
+    }
+  }
+}, 60 * 1000);
+
 // ======================= ECAST WEBSOCKET ===================
 const ecastWss = new WebSocketServer({ noServer: true });
 
@@ -4254,20 +4293,24 @@ function tallyPlayerChoiceIntoCountGroup(room, choice) {
   if (!room.voteEntities || room.voteEntities.size === 0) return;
   const vname = room.voteEntities.keys().next().value;
   if (!vname) return;
-  const choices = room.voteEntities.get(vname);
-  const keys2 = Object.keys(choices);
+  // Голоса игроков изолированы от зрительской count-group:
+  // храним в отдельной map, чтобы не смешивать со счётчиком зрителей.
+  if (!room.playerVoteEntities) room.playerVoteEntities = new Map();
+  let pchoices = room.playerVoteEntities.get(vname);
+  if (!pchoices) {
+    pchoices = {};
+    for (const k of Object.keys(room.voteEntities.get(vname))) pchoices[k] = 0;
+    room.playerVoteEntities.set(vname, pchoices);
+  }
+  const keys2 = Object.keys(pchoices);
   const idx = parseInt(choice, 10);
   const voteKey = (idx >= 0 && idx < keys2.length) ? keys2[idx] : String(choice);
-  if (!(voteKey in choices)) return;
-  choices[voteKey] += 1;
-  log("WS", `🗳️ Player choice ${choice} → count-group "${vname}" ${voteKey}=${choices[voteKey]}`);
-  const cg = JSON.stringify({ pc: 0, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } });
-  for (const a of room.audience.values()) {
-    if (!a.socket) continue;
-    try { a.socket.send(cg); } catch {}
-  }
+  if (!(voteKey in pchoices)) return;
+  pchoices[voteKey] += 1;
+  log("WS", `🗳️ Player choice ${choice} → player count-group "${vname}" ${voteKey}=${pchoices[voteKey]}`);
+  // Отдаём хосту отдельную сущность players:<name>, не трогая зрительскую.
   if (room.host) {
-    try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "audience/count-group", result: { key: vname, choices: { ...choices } } })); } catch {}
+    try { room.host.send(JSON.stringify({ pc: room.pcHost++, opcode: "audience/count-group", result: { key: `players:${vname}`, choices: { ...pchoices } } })); } catch {}
   }
 }
 
@@ -4643,8 +4686,9 @@ function onPlayerConnect(room, socket, playerName, playerId, playerSecret, ip, t
             }));
           } catch {}
         }
-        if (msg.params && msg.params.body && msg.params.body.action === "choose" && msg.params.body.choice !== undefined) {
-          tallyPlayerChoiceIntoCountGroup(room, msg.params.body.choice);
+        if (msg.params && msg.params.body && msg.params.body.action === "choose") {
+          const vote = msg.params.body.choice !== undefined ? msg.params.body.choice : msg.params.body.index;
+          if (vote !== undefined) tallyPlayerChoiceIntoCountGroup(room, vote);
         }
         room.pcPlayers.set(id, pc + 1);
         socket.send(JSON.stringify({ pc: pc, re: msg.seq, opcode: "ok", result: {} }));
